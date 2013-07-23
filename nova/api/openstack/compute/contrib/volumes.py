@@ -638,6 +638,82 @@ class SnapshotController(wsgi.Controller):
         return {'snapshot': retval}
 
 
+class MultiSnapshotController(SnapshotController):
+    """The Volumes API controller for the OpenStack API.
+
+    Overridden to allow creating multiple snapshots in one call, without
+    breaking backward compatibility.
+    """
+
+    def __init__(self):
+        super(MultiSnapshotController, self).__init__()
+
+    @wsgi.serializers(xml=SnapshotTemplate)
+    def create(self, req, body):
+        """Creates a new snapshot.
+
+        Overridden to allow creating multiple snapshots in one call, without
+        breaking backward compatibility.
+        """
+        context = req.environ['nova.context']
+        authorize(context)
+
+        if not self.is_valid_body(body, 'snapshots'):
+            raise exc.HTTPUnprocessableEntity()
+
+        snapshots = body['snapshots']
+
+        all_volumes = False
+        for snapshot in snapshots:
+            if snapshot.get("all"):
+                all_volumes = True
+                LOG.audit(_("Create snapshot from all volumes"),
+                          context=context)
+                break
+
+        if all_volumes:
+            # Rebuild snapshots using all volumes.
+            snapshots = []
+            volumes = self.volume_api.get_all(context)
+            for volume in volumes:
+                snapshot = {
+                    'volume_id': volume['id'],
+                    'display_name': volume['display_name'],
+                    'display_description': volume['display_description'],
+                    'force': False,
+                }
+                snapshots.append(snapshot)
+
+        new_snapshots = []
+        for snapshot in snapshots:
+            volume_id = snapshot['volume_id']
+            force = snapshot.get('force', False)
+            try:
+                force = strutils.bool_from_string(force, strict=True)
+            except ValueError:
+                msg = _("Invalid value '%s' for force.") % force
+                raise exception.InvalidParameterValue(err=msg)
+
+            if force:
+                create_func = self.volume_api.create_snapshot_force
+            else:
+                create_func = self.volume_api.create_snapshot
+
+            LOG.audit(_("Create snapshot from volume %s"), volume_id,
+                      context=context)
+
+            new_snapshot = create_func(context, volume_id,
+                                       snapshot.get('display_name'),
+                                       snapshot.get('display_description'))
+            new_snapshots.append(new_snapshot)
+
+        retval = []
+        for new_snapshot in new_snapshots:
+            dct = _translate_snapshot_detail_view(context, new_snapshot)
+            retval.append(dct)
+        return {'snapshots': retval}
+
+
 class Volumes(extensions.ExtensionDescriptor):
     """Volumes support."""
 
@@ -669,6 +745,11 @@ class Volumes(extensions.ExtensionDescriptor):
 
         res = extensions.ResourceExtension('os-snapshots',
                                         SnapshotController(),
+                                        collection_actions={'detail': 'GET'})
+        resources.append(res)
+
+        res = extensions.ResourceExtension('os-multi-snapshots',
+                                        MultiSnapshotController(),
                                         collection_actions={'detail': 'GET'})
         resources.append(res)
 

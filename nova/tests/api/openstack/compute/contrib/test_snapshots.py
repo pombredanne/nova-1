@@ -46,7 +46,8 @@ class SnapshotApiTest(test.TestCase):
             osapi_compute_ext_list=['Volumes'])
 
         self.context = context.get_admin_context()
-        self.app = fakes.wsgi_app(init_only=('os-snapshots',))
+        self.app = fakes.wsgi_app(init_only=('os-snapshots',
+                                             'os-multi-snapshots'))
 
     def test_snapshot_create(self):
         snapshot = {"volume_id": 12,
@@ -104,6 +105,63 @@ class SnapshotApiTest(test.TestCase):
 
         resp = req.get_response(self.app)
         self.assertEqual(resp.status_int, 400)
+
+    def test_multi_snapshots_create(self):
+        snapshots = [
+            {
+                "volume_id": 12,
+                "force": False,
+                "display_name": "Snapshot Test Name",
+                "display_description": "Snapshot Test Desc"
+            },
+            {
+                "volume_id": 13,
+                "force": False,
+                "display_name": "Snapshot Test Name 2",
+                "display_description": "Snapshot Test Desc 2"
+            },
+        ]
+        body = dict(snapshots=snapshots)
+        req = webob.Request.blank('/v2/fake/os-multi-snapshots')
+        req.method = 'POST'
+        req.body = jsonutils.dumps(body)
+        req.headers['content-type'] = 'application/json'
+
+        resp = req.get_response(self.app)
+        self.assertEqual(resp.status_int, 200)
+        resp_dict = jsonutils.loads(resp.body)
+        self.assertTrue('snapshots' in resp_dict)
+        self.assertEqual(resp_dict['snapshots'][0]['displayName'],
+                         snapshots[0]['display_name'])
+        self.assertEqual(resp_dict['snapshots'][0]['displayDescription'],
+                         snapshots['display_description'])
+        self.assertEqual(resp_dict['snapshots'][0]['volumeId'],
+                         snapshots[0]['volume_id'])
+        self.assertEqual(resp_dict['snapshots'][1]['displayName'],
+                         snapshots[1]['display_name'])
+        self.assertEqual(resp_dict['snapshots'][1]['displayDescription'],
+                         snapshots['display_description'])
+        self.assertEqual(resp_dict['snapshots'][1]['volumeId'],
+                         snapshots[1]['volume_id'])
+
+    def test_multi_snapshots_create_all(self):
+        snapshots = [
+            {
+                "all": True,
+            },
+        ]
+        body = dict(snapshots=snapshots)
+        req = webob.Request.blank('/v2/fake/os-multi-snapshots')
+        req.method = 'POST'
+        req.body = jsonutils.dumps(body)
+        req.headers['content-type'] = 'application/json'
+
+        resp = req.get_response(self.app)
+        print resp, resp.body
+        self.assertEqual(resp.status_int, 200)
+        resp_dict = jsonutils.loads(resp.body)
+        self.assertTrue('snapshots' in resp_dict)
+        # TODO(dripton) Populate more values in this test case.
 
     def test_snapshot_delete(self):
         snapshot_id = 123
