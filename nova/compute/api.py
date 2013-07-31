@@ -1624,6 +1624,17 @@ class API(base.Base):
         return image_meta
 
     @wrap_check_policy
+    @check_instance_state(vm_state=[vm_states.ACTIVE])
+    def volume_snapshot(self, context, instance, volumes):
+        """Volume snapshots
+
+        TODO
+        """
+
+        LOG.error('in compute/api.py volume_snapshot.. calling compute_rpcapi')
+        self.compute_rpcapi.volume_snapshot(context, instance, volumes)
+
+    @wrap_check_policy
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
     def backup(self, context, instance, name, backup_type, rotation,
                extra_properties=None, image_id=None):

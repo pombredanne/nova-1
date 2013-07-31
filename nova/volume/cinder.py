@@ -364,3 +364,34 @@ class API(base.Base):
     @translate_volume_exception
     def get_volume_metadata_value(self, volume_id, key):
         raise NotImplementedError()
+
+    @translate_snapshot_exception
+    def create_snapshot_metadata(self, context, volume_id):
+        item = cinderclient(context).volumes.create_snapshot_metadata(
+            volume_id)
+
+        #test = _untranslate_snapshot_summary_view(context,
+        #    item[1]['os-create_snapshot_metadata'])
+
+        #snap_id = item['os-create_snapshot_metadata']['id']
+        #status = item['os-create_snapshot_metadata']['status']
+
+        # TODO: this doesn't really seem right.  examine client API.
+
+        return item[1]['os-create_snapshot_metadata']
+
+    @translate_snapshot_exception
+    def finalize_snapshot_metadata(self, context, snapshot_id, status):
+        item = cinderclient(context).volume_snapshots.finalize_snapshot_metadata(
+            snapshot_id, status)
+
+        return item # ?
+
+    @translate_snapshot_exception
+    def delete_snapshot_metadata(self, context, snapshot_id):
+        item = cinderclient(context).volume_snapshots.delete_snapshot_metadata(
+            snapshot_id)
+
+        return item # ?
+
+    # TODO: add create_snapshot_metadata, finalize_snapshot_metadata, delete_snapshot_metadata

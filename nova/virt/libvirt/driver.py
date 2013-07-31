@@ -44,6 +44,7 @@ import errno
 import eventlet
 import functools
 import glob
+import hashlib
 import os
 import shutil
 import socket
@@ -68,6 +69,7 @@ from nova.compute import flavors
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.compute import vm_mode
+from nova import conductor
 from nova import context as nova_context
 from nova import exception
 from nova.image import glance
@@ -93,6 +95,7 @@ from nova.virt.libvirt import imagebackend
 from nova.virt.libvirt import imagecache
 from nova.virt.libvirt import utils as libvirt_utils
 from nova.virt import netutils
+from nova import volume
 
 native_threading = patcher.original("threading")
 native_Queue = patcher.original("Queue")
@@ -356,6 +359,9 @@ class LibvirtDriver(driver.ComputeDriver):
                          {'cache_mode': cache_mode, 'disk_type': disk_type})
                 continue
             self.disk_cachemodes[disk_type] = cache_mode
+
+        self._conductor_api = conductor.API()
+        self._volume_api = volume.API()
 
     @property
     def disk_cachemode(self):
@@ -1344,6 +1350,258 @@ class LibvirtDriver(driver.ComputeDriver):
         # image with no backing file.
         libvirt_utils.extract_snapshot(disk_delta, 'qcow2', None,
                                        out_path, image_format)
+
+    def _get_volume_bdms(self, bdms):
+        # Duplicated 
+        """Return only bdms that have a volume_id."""
+        return [bdm for bdm in bdms if bdm['volume_id']]
+
+    def _get_instance_volume_bdms(self, context, instance):
+        # Duplicated
+        return self._get_volume_bdms(
+            self.conductor_api.block_device_mapping_get_all_by_instance(
+                context, instance))
+
+    def _get_instance_volume_block_device_info(self, context, instance,
+                                              bdms=None):
+        # Duplicated
+        if bdms is None:
+            bdms = self._get_instance_volume_bdms(context, instance)
+        return self._get_volume_block_device_info(bdms)
+                                                                              
+
+    def _volume_snapshot(self, context, instance, domain, volumes_TODO=None):
+        """Perform volume snapshot
+           params:
+
+           volumes: list of volume UUIDs to snapshot
+        """
+       
+        import pdb
+        pdb.set_trace()
+
+        xml = domain.XMLDesc(0)
+        xml_doc = etree.fromstring(xml)
+        disks = xml_doc.findall('./devices/disk')
+        LOG.debug("disks: %s" % disks)
+
+
+        cinder_vols_to_snap = []   # to be snapshotted w/ cinder create_snapshot
+        disks_to_snap = []         # to be snapshotted by libvirt
+        disks_to_skip = []         # local disks not snapshotted
+
+        
+        bdms = self._conductor_api.block_device_mapping_get_all_by_instance(context, 
+                                                                         instance)
+        bdms = [bdm for bdm in bdms if bdm['volume_id']]
+                                                    
+        LOG.debug("bdms: %s" % bdms)
+
+        for node in xml_doc.findall('./devices/disk'):
+            pdb.set_trace()
+
+            t = node.find('target')
+            if t is None:
+                continue
+
+            if node.find('serial') is None:
+                disks_to_skip.append(t.get('dev'))
+                continue
+
+           
+            # node is a Cinder volume
+
+            disk_info = {
+                'dev': t.get('dev'),
+                'serial': node.findtext('serial')
+            }
+
+
+            this_bdm = [elem for elem in bdms if elem['volume_id'] == node.findtext('serial')][0]
+
+            conn_info = jsonutils.loads(this_bdm['connection_info'])
+
+            info = {'bdm': this_bdm, 'disk': disk_info}
+
+            LOG.debug("conn_info: %s" % conn_info)
+            LOG.debug("info: %s" % info)
+
+            # Determine if this a volume we should qcow2 snapshot
+
+            if conn_info['driver_volume_type'] not in ['glusterfs']:
+                cinder_vols_to_snap.append(conn_info)
+                continue
+
+            #try:
+            #    result = self.volume_driver_method('snapshot_volume',
+            #                                       conn_info,
+            #                                       instance['name'],
+            #                                       info)
+            #except Exception as e:
+            #    LOG.exception("hmmm")
+            #    pdb.set_trace()
+
+
+            # TODO: call to Cinder client to create snapshot metadata
+            pdb.set_trace()
+            if self._volume_api is None:
+                self._volume_api = volume.API()
+
+            volume_id = disk_info['serial']
+
+            try:
+                # Create record of snapshot in 'creating' status
+                snapshot = self._volume_api.create_snapshot_metadata(context,
+                                                                     volume_id)
+            except Exception:
+                LOG.exception('cinder client call failed')
+                raise
+
+
+            pdb.set_trace()
+            hash_str = hashlib.md5(conn_info['data']['export']).hexdigest()  # TODO
+
+            file_path = '/opt/stack/data/nova/mnt/%s/volume-%s' % (hash_str, disk_info['serial'])
+            file_snap_path = '%s.%s' % (file_path, snapshot['id'])
+
+            utils.execute('mv', file_path, file_snap_path, run_as_root=True)
+
+            utils.execute('qemu-img', 'create', '-f', 'qcow2',
+                          '-o', 'backing_file=%s' % file_snap_path, file_path,
+                          run_as_root=True)
+
+            #utils.execute('chmod', 'a+rw', file_path, run_as_root=True)
+            #utils.execute('chmod', 'a+rw', file_snap_path)
+
+            # Go do qemu-img stuff
+
+            disks_to_snap.append((file_path, snapshot))
+            #snapshots_to_finalize.append(snapshot)
+
+            # TODO: append something to disks_to_snap array
+
+        xml_snapshot = etree.Element('domainsnapshot')
+        #xml_name = etree.Element('name')
+        #xml_name.text = my_snap_uuid
+        #xml_snapshot.append(xml_name)
+
+        xml_disks = etree.Element('disks')
+
+
+        # TODO: determine path correctly
+        #my_path = '/opt/stack/data/nova/mnt/dc4f8d715fe9de3ff2cb6c235f9bf38b/volume-1e8b345f-9fd9-48ee-8508-07870817d14b'
+
+        for disk, snapshot in disks_to_snap:
+            LOG.debug("creating xml for disk %s" % disk)
+            d = etree.Element('disk',
+                              name = disk,
+                              snapshot='external')
+            source = etree.Element('source', file = disk)
+
+            d.append(source)
+            xml_disks.append(d)
+
+        for dev in disks_to_skip:
+            LOG.debug("skipping disk %s" % dev)
+
+            d = etree.Element('disk',
+                              name = dev,
+                              snapshot = 'no')
+
+            xml_disks.append(d)
+
+        xml_snapshot.append(xml_disks)
+
+        pdb.set_trace()
+
+        #LOG.debug("snap xml: %s" % etree.tostring(xml_snapshot))
+
+        snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE)
+
+        try:
+            domain.snapshotCreateXML(etree.tostring(xml_snapshot), snap_flags)
+        except Exception as e:
+            LOG.exception('uh oh')
+            LOG.warning('trying again w/o quiescing.')
+
+        snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT)
+
+        try:
+            domain.snapshotCreateXML(etree.tostring(xml_snapshot), snap_flags)
+        except Exception as e:
+            LOG.exception('uh oh 2')
+
+            try:
+                for disk, snapshot in disks_to_snap:
+                    # fail snapshots
+                    self._volume_api.finalize_snapshot_metadata(context,
+                                                                snapshot['id'],
+                                                                'error')
+            except Exception as e:
+                LOG.exception('failed to finalize to error')
+                raise
+
+            raise
+
+        for disk, snapshot in disks_to_snap:
+            # mark snapshots as done
+            self._volume_api.finalize_snapshot_metadata(context,
+                                                        snapshot['id'],
+                                                        'available')
+
+        for conn_info in cinder_vols_to_snap:
+            self._volume_api.create_snapshot(context,
+                                             conn_info['serial'], None, None)
+
+
+        raise NotDone()
+
+
+    def volume_snapshot(self, context, instance, volumes_TODO):
+        """Create snapshots of an instance's volumes with Cinder.
+        
+           param volumes: list of volume ids to snapshot
+                          (None = all)
+                          TODO: add this back
+        """
+
+        LOG.debug("in libvirt/driver volume_snapshot...")
+        LOG.debug("instance is %s" % instance)
+
+        if CONF.libvirt_type != 'kvm':
+            LOG.debug('hrm')
+            #raise NotImplementedError()
+
+        try:
+            virt_dom = self._lookup_by_name(instance['name'])
+        except exception.InstanceNotFound:
+            raise exception.InstanceNotRunning(instance_id=instance['uuid'])
+
+        LOG.debug("guess we found an instance... ok")
+
+
+        # Let's see what volumes are attached to this instance
+        # block device mapping table knows this
+        # Get from block_device_mapping table where instance_uuid = instance['uuid']
+        #bdm_info = driver.block_device_info_get_mapping(block_device_info)
+        #LOG.debug("bdm info: %s" % bdm_info)
+
+        disk_infos = jsonutils.loads(self.get_instance_disk_info(instance['name']))
+        LOG.debug("disk_infos: %s" % disk_infos)
+    
+        # ???
+        # What's in our database?
+
+        # ok...
+        self._volume_snapshot(context, instance, virt_dom, volumes_TODO)
+
+        raise NotImplementedError('write some code')
+
 
     def reboot(self, context, instance, network_info, reboot_type='SOFT',
                block_device_info=None, bad_volumes_callback=None):

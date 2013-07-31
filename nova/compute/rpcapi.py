@@ -186,6 +186,7 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         2.32 - Make reboot_instance take a new world instance object
         2.33 - Made suspend_instance() and resume_instance() take new-world
                instance objects
+        2.34 - Add volume_snapshot()
     '''
 
     #
@@ -706,6 +707,14 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
             instance=instance, image=image),
             topic=_compute_topic(self.topic, ctxt, host, None),
             version='2.31')
+
+    def volume_snapshot(self, ctxt, instance, volumes=None):
+        import pdb
+        pdb.set_trace()
+        self.cast(ctxt, self.make_msg('volume_snapshot',
+            instance=instance, volumes=volumes),
+            topic=_compute_topic(self.topic, ctxt, None, instance),
+            version='2.34')
 
 
 class SecurityGroupAPI(nova.openstack.common.rpc.proxy.RpcProxy):

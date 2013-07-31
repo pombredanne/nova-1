@@ -2010,6 +2010,13 @@ class ComputeTestCase(BaseTestCase):
                                        instance=instance)
         self.compute.terminate_instance(self.context, instance=instance)
 
+    def test_volume_snapshot(self):
+        instance = jsonutils.to_primitive(self._create_fake_instance())
+        self.compute.run_instance(self.context, instance=instance)
+        db.instance_update(self.context, instance['uuid'],
+                           {'task_state': task_states.VOLUME_SNAPSHOT})
+        self.compute.volume_snapshot(self.context, instance)
+
     def _assert_state(self, state_dict):
         """Assert state of VM is equal to state passed as parameter."""
         instances = db.instance_get_all(self.context)

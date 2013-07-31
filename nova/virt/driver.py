@@ -367,6 +367,16 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
+    def volume_snapshot(self, context, instance):
+        """
+        Snapshots volumes attached to a specified instance.
+
+        :param context: security context
+        :param instance: Instance object as returned by DB layer.
+        :param volumes: Volumes to be snapshotted
+        """
+        raise NotImplementedError()
+
     def finish_migration(self, context, migration, instance, disk_info,
                          network_info, image_meta, resize_instance,
                          block_device_info=None, power_on=True):

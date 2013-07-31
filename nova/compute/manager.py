@@ -364,7 +364,7 @@ class ComputeVirtAPI(virtapi.VirtAPI):
 class ComputeManager(manager.SchedulerDependentManager):
     """Manages the running instances from creation to destruction."""
 
-    RPC_API_VERSION = '2.33'
+    RPC_API_VERSION = '2.34'
 
     def __init__(self, compute_driver=None, *args, **kwargs):
         """Load configuration options and connect to the hypervisor."""
@@ -3943,6 +3943,13 @@ class ComputeManager(manager.SchedulerDependentManager):
         self._notify_about_instance_usage(
                         context, instance, "live_migration.rollback.dest.end",
                         network_info=network_info)
+
+    def volume_snapshot(self, context, instance, volumes):
+        LOG.error("in compute manager.py : calling driver volume_snapshot")
+        import pdb
+        pdb.set_trace()
+        #self.compute_rpcapi.volume_snapshot(context, instance)
+        self.driver.volume_snapshot(context, instance, volumes)
 
     @periodic_task.periodic_task
     def _heal_instance_info_cache(self, context):

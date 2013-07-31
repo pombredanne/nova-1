@@ -19,10 +19,13 @@
 """Volume drivers for libvirt."""
 
 import hashlib
+import libvirt  # ? legit?
 import os
 import time
 import urllib2
 import urlparse
+
+from lxml import etree
 
 from oslo.config import cfg
 
@@ -595,6 +598,32 @@ class LibvirtAOEVolumeDriver(LibvirtBaseVolumeDriver):
 class LibvirtGlusterfsVolumeDriver(LibvirtBaseVolumeDriver):
     """Class implements libvirt part of volume driver for GlusterFS."""
 
+    # TODO: move this into some util class.  Duped from driver.py
+    def _lookup_by_name(self, instance_name):
+        """Retrieve libvirt domain object given an instance name.
+
+        All libvirt error handling should be handled in this method and
+        relevant nova exceptions should be raised in response.
+
+        """
+        try:
+            import pdb
+            pdb.set_trace()
+            #return self.connection.lookupByName(instance_name)
+            return self.connection._lookup_by_name(instance_name)
+        except libvirt.libvirtError as ex:
+            error_code = ex.get_error_code()
+            if error_code == libvirt.VIR_ERR_NO_DOMAIN:
+                raise exception.InstanceNotFound(instance_id=instance_name)
+
+            msg = (_('Error from libvirt while looking up %(instance_name)s: '
+                     '[Error Code %(error_code)s] %(ex)s') %
+                   {'instance_name': instance_name,
+                    'error_code': error_code,
+                    'ex': ex})
+            raise exception.NovaException(msg)
+
+
     def __init__(self, connection):
         """Create back-end to glusterfs."""
         super(LibvirtGlusterfsVolumeDriver,
@@ -611,6 +640,99 @@ class LibvirtGlusterfsVolumeDriver(LibvirtBaseVolumeDriver):
         conf.source_path = path
         conf.driver_format = connection_info['data'].get('format', 'raw')
         return conf
+
+    def snapshot_volume(self, bdms, instance_name):
+        """
+
+        dead code
+
+        """
+
+        return NotImplementedError()
+
+        """
+        LOG.debug("in Gluster snapshot_volume code")
+
+        domain = self._lookup_by_name(instance_name)
+        import pdb
+        pdb.set_trace()
+        pass
+
+        xml = domain.XMLDesc(0)
+        xml_doc = etree.fromstring(xml)
+        disks = xml_doc.findall('./devices/disk')
+        LOG.debug("disks: %s" % disks)
+
+        xml_disks = etree.Element('disks')
+
+        for node in xml_doc.findall('./devices/disk'):
+            if node.find('serial') is None:
+                continue
+            
+            t = node.find('target')
+            if t is None:
+                continue
+
+            disk_info = {
+                'dev': t.get('dev'),
+                'serial': node.findtext('serial')
+            }
+
+            this_bdm = [elem for elem in bdms if elem['volume_id'] == node.findtext('serial')][0]
+
+            hash_str = 'dc4f8d715fe9de3ff2cb6c235f9bf38b'
+
+            file_path = '/opt/stack/data/nova/mnt/%s/volume-%s' % (
+                  hash_str, disk_info['serial']) # TODO: generate w/ gluster call
+
+            d = etree.Element('disk',
+                              name = my_path,
+                              snapshot = 'external')
+            source = etree.Element('source', file = file_path)
+            d.append(source)
+            xml_disks.append(d)
+
+            pdb.set_trace()
+
+
+
+
+        disk_info = info['disk']
+
+        file_path = '/opt/stack/data/nova/mnt/%s/%s' % \
+             ('dc4f8d715fe9de3ff2cb6c235f9bf38b', disk_info['serial'])
+
+        xml_snapshot = etree.Element('domainsnapshot')
+        xml_name = etree.Element('name')
+        xml_name.text = 'snaptest.snapUUIDgoesHERE'
+        xml_snapshot.append(xml_name)
+
+
+        my_path = '/opt/stack/data/nova/mnt/dc4f8d715fe9de3ff2cb6c235f9bf38b/volume-1e8b345f-9fd9-48ee-8508-07870817d14b'
+
+
+        #for disk in disks_to_snap:
+        #    d = etree.Element('disk',
+        #                      #name = disk,  # TODO: wrong, need path
+        #                      name = my_path,
+        #                      snapshot='external')
+        #    source = etree.Element('source', file = my_path)
+
+        #    d.append(source)
+        #    xml_disks.append(d)
+        
+        xml_snapshot.append(xml_disks)
+
+        LOG.debug("snap xml: %s" % etree.tostring(xml_snapshot))
+
+        snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT)
+
+        domain.snapshotCreateXML(etree.tostring(xml_snapshot), snap_flags)
+        """
+
+
 
     def _ensure_mounted(self, glusterfs_export, options=None):
         """

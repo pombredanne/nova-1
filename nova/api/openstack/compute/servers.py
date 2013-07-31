@@ -1328,16 +1328,21 @@ class Controller(wsgi.Controller):
 
         props = {}
         metadata = entity.get('metadata', {})
-        common.check_img_metadata_properties_quota(context, metadata)
-        try:
-            props.update(metadata)
-        except ValueError:
-            msg = _("Invalid metadata")
-            raise exc.HTTPBadRequest(explanation=msg)
+        #common.check_img_metadata_properties_quota(context, metadata)
+        #try:
+        #    props.update(metadata)
+        #except ValueError:
+        #    msg = _("Invalid metadata")
+        #    raise exc.HTTPBadRequest(explanation=msg)
 
         instance = self._get_server(context, req, id)
 
-        bdms = self.compute_api.get_instance_bdms(context, instance)
+        volumes = None  # will be a list of volume UUIDs
+
+        image = self.compute_api.volume_snapshot(context, instance, volumes)
+
+        LOG.error('called volume_snapshot!')
+        return
 
         try:
             if self.compute_api.is_volume_backed_instance(context, instance,

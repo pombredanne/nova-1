@@ -120,3 +120,6 @@ SHELVING_OFFLOADING = 'shelving_offloading'
 
 # possible task states during unshelve()
 UNSHELVING = 'unshelving'
+
+# possible task status during volume_snapshot()
+VOLUME_SNAPSHOT = 'volume_snapshot'

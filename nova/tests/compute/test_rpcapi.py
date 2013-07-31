@@ -390,3 +390,7 @@ class ComputeRpcAPITestCase(test.TestCase):
     def test_unrescue_instance(self):
         self._test_compute_api('unrescue_instance', 'cast',
                 instance=self.fake_instance)
+
+    def test_volume_snapshot(self):
+        self._test_compute_api('volume_snapshot', 'cast',
+                instance=self.fake_instance, volumes=None, version='2.34')
