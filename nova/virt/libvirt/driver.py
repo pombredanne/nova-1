@@ -1378,10 +1378,18 @@ class LibvirtDriver(driver.ComputeDriver):
            params:
 
            volumes: list of volume UUIDs to snapshot
+
+           Succeeds if snapshotting of all QCOW2 volumes is successful, and all
+           Cinder volumes initiated successfully (but does not ensure
+           completion).
         """
+
+        failure = False
+
+        supported_drivers = ['glusterfs']
        
-        #import pdb
-        #pdb.set_trace()
+        import pdb
+        pdb.set_trace()
 
         xml = domain.XMLDesc(0)
         xml_doc = etree.fromstring(xml)
@@ -1431,8 +1439,9 @@ class LibvirtDriver(driver.ComputeDriver):
 
             # Determine if this a volume we should qcow2 snapshot
 
-            if conn_info['driver_volume_type'] not in ['glusterfs']:
+            if conn_info['driver_volume_type'] not in supported_drivers:
                 cinder_vols_to_snap.append(conn_info)
+                disks_to_skip.append(t.get('dev'))
                 continue
 
             #try:
@@ -1440,6 +1449,7 @@ class LibvirtDriver(driver.ComputeDriver):
             #                                       conn_info,
             #                                       instance['name'],
             #                                       info)
+            #disks_to_skip.append(t.get('dev'))
             #except Exception as e:
             #    LOG.exception("hmmm")
             #    pdb.set_trace()
@@ -1454,6 +1464,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
             try:
                 # Create record of snapshot in 'creating' status
+                LOG.debug("calling to cinder for volume %s" % volume_id)
                 snapshot = self._volume_api.create_snapshot_metadata(context,
                                                                      volume_id)
             except Exception:
@@ -1527,7 +1538,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         #pdb.set_trace()
 
-        #LOG.debug("snap xml: %s" % etree.tostring(xml_snapshot))
+        LOG.debug("snap xml: %s" % etree.tostring(xml_snapshot))
 
         snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
                       libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
@@ -1538,8 +1549,10 @@ class LibvirtDriver(driver.ComputeDriver):
             domain.snapshotCreateXML(etree.tostring(xml_snapshot),
                                      snap_flags | QUIESCE)
         except Exception as e:
-            LOG.exception('uh oh')
-            LOG.warning('trying again w/o quiescing.')
+            msg = _('Unable to create quiesced VM snapshot.')
+            LOG.exception(msg)
+            msg = _('Attempting snapshot again with quiescing disabled.')
+            LOG.warning(msg)
 
         try:
             domain.snapshotCreateXML(etree.tostring(xml_snapshot),
@@ -1559,19 +1572,36 @@ class LibvirtDriver(driver.ComputeDriver):
 
             raise
 
-        for disk, snapshot in disks_to_snap:
-            # mark snapshots as done
-            self._volume_api.finalize_snapshot_metadata(context,
-                                                        snapshot['id'],
-                                                        'available')
-
         for conn_info in cinder_vols_to_snap:
             # TODO: track whether all of these succeed
-            self._volume_api.create_snapshot(context,
-                                             conn_info['serial'], None, None)
+            # force = allow snapshot while 'in-use'
+            try:
+                snap_result = self._volume_api.create_snapshot_force(
+                                   context, conn_info['serial'], None, None)
+                pdb.set_trace()
+                LOG.debug("snap_result: %s" % snap_result)
+                if snap_result['status'] != 'creating':
+                    LOG.error('Failed to create Cinder snapshot for volume %s' %
+                              conn_info['serial'])
+                    failure = True
+            except Exception:
+                # TODO: CinderException? 
+                failure = True
+                continue
+
+
+        for disk, snapshot in disks_to_snap:
+            # mark snapshots as done
+            result = self._volume_api.finalize_snapshot_metadata(context,
+                                                                 snapshot['id'],
+                                                                 'available')
+            pdb.set_trace()
 
 
         # TODO: success = all attempted snapshots succeeded
+
+        if failure == True:
+            raise SomethingFailed()
 
         raise NotDone()
 
@@ -1608,8 +1638,6 @@ class LibvirtDriver(driver.ComputeDriver):
     
         self._volume_snapshot(context, instance, virt_dom, volumes_TODO)
 
-        raise NotImplementedError('write some code')
-
 
     def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id):
         """
@@ -1618,13 +1646,13 @@ class LibvirtDriver(driver.ComputeDriver):
         param snapshot_id: snapshot UUID
         """
 
-        #import pdb
+        import pdb
         pdb.set_trace()
 
         LOG.debug('in libvirt/driver volume_snapshot_delete')
 
         volume_id = '8e6cdefb-c496-4a8d-aed4-8d29dfd5b0bb'
-        snapshot_id = 'd90a9fb7-52d9-4afa-9974-ea869b83c099'
+        snapshot_id = 'ce3ae8de-bfab-4f73-9ea6-ff4eebbf8c83'
 
         try:
             virt_dom = self._lookup_by_name(instance['name'])
