@@ -188,7 +188,7 @@
 #periodic_fuzzy_delay=60
 
 # a list of APIs to enable by default (list value)
-#enabled_apis=ec2,osapi_compute,metadata
+#enabled_apis=ec2,osapi_compute,metadata,osapi_compute_admin
 
 # a list of APIs with enabled SSL (list value)
 #enabled_ssl_apis=
@@ -210,6 +210,18 @@
 
 # Number of workers for OpenStack API service (integer value)
 #osapi_compute_workers=<None>
+
+# IP address for the OpenStack Compute Admin API (string
+# value)
+#osapi_compute_admin_listen=0.0.0.0
+
+# port number for the OpenStack Compute Admin API (integer
+# value)
+#osapi_compute_admin_listen_port=35359
+
+# Number of workers for OpenStack Compute Admin API (integer
+# value)
+#osapi_compute_admin_workers=<None>
 
 # OpenStack metadata service manager (string value)
 #metadata_manager=nova.api.manager.MetadataManager
@@ -445,6 +457,12 @@
 # value)
 #osapi_compute_ext_list=
 
+# Specify list of extensions to load when using
+# osapi_compute_extension option with
+# nova.api.openstack.compute.contrib.select_admin_extensions
+# (list value)
+#osapi_compute_admin_ext_list=
+
 
 #
 # Options defined in nova.api.openstack.compute.contrib.fping
@@ -476,6 +494,10 @@
 
 # osapi compute extension to load (multi valued)
 #osapi_compute_extension=nova.api.openstack.compute.contrib.standard_extensions
+
+# osapi compute extension to load for the admin API (multi
+# valued)
+#osapi_compute_admin_extension=nova.api.openstack.compute.contrib.standard_admin_extensions
 
 
 #
@@ -2524,6 +2546,15 @@
 # be loaded if it exists in this list. Specify the extension
 # aliases here. (list value)
 #extensions_whitelist=
+
+# A list of v3 API extensions to never load. Specify the
+# extension aliases here. (list value)
+#admin_extensions_blacklist=
+
+# If the list is not empty then a v3 API extension will only
+# be loaded if it exists in this list. Specify the extension
+# aliases here. (list value)
+#admin_extensions_whitelist=
 
 
 [conductor]

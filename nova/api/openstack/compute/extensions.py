@@ -23,10 +23,15 @@ from nova.openstack.common import log as logging
 
 ext_opts = [
     cfg.MultiStrOpt('osapi_compute_extension',
-                    default=[
-                      'nova.api.openstack.compute.contrib.standard_extensions'
-                      ],
-                    help='osapi compute extension to load'),
+            default=[
+                'nova.api.openstack.compute.contrib.standard_extensions'
+            ],
+            help='osapi compute extension to load'),
+    cfg.MultiStrOpt('osapi_compute_admin_extension',
+            default=[
+                'nova.api.openstack.compute.contrib.standard_admin_extensions'
+            ],
+            help='osapi compute extension to load for the admin API'),
 ]
 CONF = cfg.CONF
 CONF.register_opts(ext_opts)
@@ -35,9 +40,15 @@ LOG = logging.getLogger(__name__)
 
 
 class ExtensionManager(base_extensions.ExtensionManager):
-    def __init__(self):
+    def __init__(self, cls_list=None):
         LOG.audit(_('Initializing extension manager.'))
-        self.cls_list = CONF.osapi_compute_extension
+        self.cls_list = cls_list or CONF.osapi_compute_extension
         self.extensions = {}
         self.sorted_ext_list = []
         self._load_extensions()
+
+
+class AdminExtensionManager(ExtensionManager):
+    def __init__(self):
+        super(AdminExtensionManager,
+                self).__init__(cls_list=CONF.osapi_compute_admin_extension)

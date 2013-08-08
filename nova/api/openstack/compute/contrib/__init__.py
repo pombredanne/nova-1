@@ -21,6 +21,8 @@ It can't be called 'extensions' because that causes namespacing problems.
 
 """
 
+import os
+
 from oslo.config import cfg
 
 from nova.api.openstack import extensions
@@ -32,6 +34,11 @@ ext_opts = [
                 help='Specify list of extensions to load when using osapi_'
                      'compute_extension option with nova.api.openstack.'
                      'compute.contrib.select_extensions'),
+    cfg.ListOpt('osapi_compute_admin_ext_list',
+                default=[],
+                help='Specify list of extensions to load when using osapi_'
+                     'compute_extension option with nova.api.openstack.'
+                     'compute.contrib.select_admin_extensions'),
 ]
 CONF = cfg.CONF
 CONF.register_opts(ext_opts)
@@ -43,6 +50,19 @@ def standard_extensions(ext_mgr):
     extensions.load_standard_extensions(ext_mgr, LOG, __path__, __package__)
 
 
+def standard_admin_extensions(ext_mgr):
+    standard_extensions(ext_mgr)
+    admin_path = [os.path.join(__path__[0], '..', 'contrib_admin')]
+    admin_package = __package__.rsplit('.', 1)[0] + '.contrib_admin'
+    extensions.load_standard_extensions(ext_mgr, LOG, admin_path,
+                                        admin_package)
+
+
 def select_extensions(ext_mgr):
     extensions.load_standard_extensions(ext_mgr, LOG, __path__, __package__,
                                         CONF.osapi_compute_ext_list)
+
+
+def select_admin_extensions(ext_mgr):
+    extensions.load_standard_extensions(ext_mgr, LOG, __path__,
+            __package__, CONF.osapi_compute_admin_ext_list)

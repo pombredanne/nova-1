@@ -77,49 +77,75 @@ class ExtensionLoadingTestCase(test.TestCase):
         app = compute.APIRouterV3()
         self.assertNotIn('os-fixed-ips', app._loaded_extension_info.extensions)
 
-    def test_extensions_whitelist_accept(self):
+    def _test_extensions_whitelist_accept(self, app, whitelist_opt):
         # NOTE(maurosr): just to avoid to get an exception raised for not
         # loading all core api.
         v3_core = openstack.API_V3_CORE_EXTENSIONS
         openstack.API_V3_CORE_EXTENSIONS = set(['servers'])
         self.addCleanup(self._set_v3_core, v3_core)
 
-        app = compute.APIRouterV3()
-        self.assertIn('os-fixed-ips', app._loaded_extension_info.extensions)
-        CONF.set_override('extensions_whitelist', ['servers', 'os-fixed-ips'],
+        self.assertIn('os-fixed-ips', app()._loaded_extension_info.extensions)
+        CONF.set_override(whitelist_opt, ['servers', 'os-fixed-ips'],
                           'osapi_v3')
-        app = compute.APIRouterV3()
-        self.assertIn('os-fixed-ips', app._loaded_extension_info.extensions)
+        self.assertIn('os-fixed-ips', app()._loaded_extension_info.extensions)
+
+    def test_extensions_whitelist_accept(self):
+        app = compute.APIRouterV3
+        self._test_extensions_whitelist_accept(app, 'extensions_whitelist')
+
+    def test_extensions_admin_whitelist_accept(self):
+        app = compute.AdminAPIRouterV3
+        self._test_extensions_whitelist_accept(app,
+                'admin_extensions_whitelist')
+
+    def _test_extensions_whitelist_block(self, app, whitelist_opt):
+        # NOTE(maurosr): just to avoid to get an exception raised for not
+        # loading all core api.
+        v3_core = openstack.API_V3_CORE_EXTENSIONS
+        openstack.API_V3_CORE_EXTENSIONS = set(['servers'])
+        self.addCleanup(self._set_v3_core, v3_core)
+
+        self.assertIn('os-fixed-ips', app()._loaded_extension_info.extensions)
+        CONF.set_override(whitelist_opt, ['servers'], 'osapi_v3')
+        self.assertNotIn('os-fixed-ips',
+                app()._loaded_extension_info.extensions)
 
     def test_extensions_whitelist_block(self):
+        app = compute.APIRouterV3
+        self._test_extensions_whitelist_block(app, 'extensions_whitelist')
+
+    def test_extensions_admin_whitelist_block(self):
+        app = compute.AdminAPIRouterV3
+        self._test_extensions_whitelist_block(app,
+                'admin_extensions_whitelist')
+
+    def _test_blacklist_overrides_whitelist(self, app, whitelist_opt,
+            blacklist_opt):
         # NOTE(maurosr): just to avoid to get an exception raised for not
         # loading all core api.
         v3_core = openstack.API_V3_CORE_EXTENSIONS
         openstack.API_V3_CORE_EXTENSIONS = set(['servers'])
         self.addCleanup(self._set_v3_core, v3_core)
 
-        app = compute.APIRouterV3()
-        self.assertIn('os-fixed-ips', app._loaded_extension_info.extensions)
-        CONF.set_override('extensions_whitelist', ['servers'], 'osapi_v3')
-        app = compute.APIRouterV3()
-        self.assertNotIn('os-fixed-ips', app._loaded_extension_info.extensions)
+        self.assertIn('os-fixed-ips', app()._loaded_extension_info.extensions)
+        CONF.set_override(whitelist_opt, ['servers', 'os-fixed-ips'],
+                          'osapi_v3')
+        CONF.set_override(blacklist_opt, ['os-fixed-ips'], 'osapi_v3')
+        app_inst = app()
+        self.assertNotIn('os-fixed-ips',
+                app_inst._loaded_extension_info.extensions)
+        self.assertIn('servers', app_inst._loaded_extension_info.extensions)
+        self.assertEqual(len(app_inst._loaded_extension_info.extensions), 1)
 
     def test_blacklist_overrides_whitelist(self):
-        # NOTE(maurosr): just to avoid to get an exception raised for not
-        # loading all core api.
-        v3_core = openstack.API_V3_CORE_EXTENSIONS
-        openstack.API_V3_CORE_EXTENSIONS = set(['servers'])
-        self.addCleanup(self._set_v3_core, v3_core)
+        app = compute.APIRouterV3
+        self._test_blacklist_overrides_whitelist(app, 'extensions_whitelist',
+                'extensions_blacklist')
 
-        app = compute.APIRouterV3()
-        self.assertIn('os-fixed-ips', app._loaded_extension_info.extensions)
-        CONF.set_override('extensions_whitelist', ['servers', 'os-fixed-ips'],
-                          'osapi_v3')
-        CONF.set_override('extensions_blacklist', ['os-fixed-ips'], 'osapi_v3')
-        app = compute.APIRouterV3()
-        self.assertNotIn('os-fixed-ips', app._loaded_extension_info.extensions)
-        self.assertIn('servers', app._loaded_extension_info.extensions)
-        self.assertEqual(len(app._loaded_extension_info.extensions), 1)
+    def test_blacklist_overrides_whitelist_admin(self):
+        app = compute.AdminAPIRouterV3
+        self._test_blacklist_overrides_whitelist(app,
+                'admin_extensions_whitelist', 'admin_extensions_blacklist')
 
     def test_get_missing_core_extensions(self):
         v3_core = openstack.API_V3_CORE_EXTENSIONS

@@ -50,6 +50,10 @@ class APIRouter(nova.api.openstack.APIRouter):
     """
     ExtensionManager = extensions.ExtensionManager
 
+    def __init__(self, *args, **kwargs):
+        self.admin_api = kwargs.pop('admin_api', False)
+        super(APIRouter, self).__init__(*args, **kwargs)
+
     def _setup_routes(self, mapper, ext_mgr, init_only):
         if init_only is None or 'versions' in init_only:
             self.resources['versions'] = versions.create_resource()
@@ -131,14 +135,23 @@ class APIRouter(nova.api.openstack.APIRouter):
                            conditions={"method": ['PUT']})
 
 
+class AdminAPIRouter(APIRouter):
+
+    ExtensionManager = extensions.AdminExtensionManager
+
+    def __init__(self, *args, **kwargs):
+        kwargs['admin_api'] = True
+        super(AdminAPIRouter, self).__init__(*args, **kwargs)
+
+
 class APIRouterV3(nova.api.openstack.APIRouterV3):
     """
     Routes requests on the OpenStack API to the appropriate controller
     and method.
     """
-    def __init__(self, init_only=None):
+    def __init__(self, init_only=None, admin_api=False):
         self._loaded_extension_info = plugins.LoadedExtensionInfo()
-        super(APIRouterV3, self).__init__(init_only)
+        super(APIRouterV3, self).__init__(init_only, admin_api)
 
     def _register_extension(self, ext):
         return self.loaded_extension_info.register_extension(ext.obj)
@@ -146,3 +159,9 @@ class APIRouterV3(nova.api.openstack.APIRouterV3):
     @property
     def loaded_extension_info(self):
         return self._loaded_extension_info
+
+
+class AdminAPIRouterV3(APIRouterV3):
+    def __init__(self, init_only=None):
+        super(AdminAPIRouterV3, self).__init__(
+                init_only=init_only, admin_api=True)

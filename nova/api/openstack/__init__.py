@@ -48,6 +48,15 @@ api_opts = [
                     default=[],
                     help='If the list is not empty then a v3 API extension '
                     'will only be loaded if it exists in this list. Specify '
+                    'the extension aliases here.'),
+        cfg.ListOpt('admin_extensions_blacklist',
+                    default=[],
+                    help='A list of v3 API extensions to never load. '
+                    'Specify the extension aliases here.'),
+        cfg.ListOpt('admin_extensions_whitelist',
+                    default=[],
+                    help='If the list is not empty then a v3 API extension '
+                    'will only be loaded if it exists in this list. Specify '
                     'the extension aliases here.')
 ]
 api_opts_group = cfg.OptGroup(name='osapi_v3', title='API v3 Options')
@@ -244,13 +253,24 @@ class APIRouterV3(base_wsgi.Router):
     """
 
     API_EXTENSION_NAMESPACE = 'nova.api.v3.extensions'
+    ADMIN_API_EXTENSION_NAMESPACE = 'nova.api.v3admin.extensions'
 
     @classmethod
     def factory(cls, global_config, **local_config):
         """Simple paste factory, :class:`nova.wsgi.Router` doesn't have one."""
         return cls()
 
-    def __init__(self, init_only=None):
+    def __init__(self, init_only=None, admin_api=False):
+        self.admin_api = admin_api
+        if self.admin_api:
+            whitelist = CONF.osapi_v3.admin_extensions_whitelist
+            blacklist = CONF.osapi_v3.admin_extensions_blacklist
+        else:
+            whitelist = CONF.osapi_v3.extensions_whitelist
+            blacklist = CONF.osapi_v3.extensions_blacklist
+
+        admin_txt = 'Admin ' if self.admin_api else ''
+
         # TODO(cyeoh): bp v3-api-extension-framework. Currently load
         # all extensions but eventually should be able to exclude
         # based on a config file
@@ -261,20 +281,21 @@ class APIRouterV3(base_wsgi.Router):
 
                 # Check whitelist is either empty or if not then the extension
                 # is in the whitelist
-                if (not CONF.osapi_v3.extensions_whitelist or
-                        ext.obj.alias in CONF.osapi_v3.extensions_whitelist):
-
+                if not whitelist or ext.obj.alias in whitelist:
                     # Check the extension is not in the blacklist
-                    if ext.obj.alias not in CONF.osapi_v3.extensions_blacklist:
+                    if ext.obj.alias not in blacklist:
                         return self._register_extension(ext)
                     else:
-                        LOG.warning(_("Not loading %s because it is "
-                                      "in the blacklist"), ext.obj.alias)
+                        LOG.warning(_("Not loading %(alias)s because it is "
+                                      "in the %(admin)sblacklist"),
+                                      {'alias': ext.obj.alias,
+                                       'admin': admin_txt})
                         return False
                 else:
                     LOG.warning(
-                        _("Not loading %s because it is not in the whitelist"),
-                        ext.obj.alias)
+                        _("Not loading %(alias)s because it is not in the"
+                          " %(admin)swhitelist"),
+                        {'alias': ext.obj.alias, 'admin': admin_txt})
                     return False
             else:
                 return False
@@ -284,17 +305,17 @@ class APIRouterV3(base_wsgi.Router):
             return
 
         self.init_only = init_only
-        LOG.debug(_("v3 API Extension Blacklist: %s"),
-                  CONF.osapi_v3.extensions_blacklist)
-        LOG.debug(_("v3 API Extension Whitelist: %s"),
-                  CONF.osapi_v3.extensions_whitelist)
+        LOG.debug(_("v3 %(admin)sAPI Extension Blacklist: %(blacklist)s"),
+                {'admin': admin_txt, 'blacklist': blacklist})
+        LOG.debug(_("v3 %(admin)sAPI Extension Whitelist: %(whitelist)s"),
+                {'admin': admin_txt, 'whitelist': whitelist})
 
-        in_blacklist_and_whitelist = set(
-            CONF.osapi_v3.extensions_whitelist).intersection(
-                CONF.osapi_v3.extensions_blacklist)
+        in_blacklist_and_whitelist = set(whitelist).intersection(blacklist)
         if len(in_blacklist_and_whitelist) != 0:
-            LOG.warning(_("Extensions in both blacklist and whitelist: %s"),
-                        list(in_blacklist_and_whitelist))
+            LOG.warning(_("%(admin)sExtensions in both blacklist and "
+                          "whitelist: %(list)s"),
+                          {'admin': admin_txt,
+                           'list': list(in_blacklist_and_whitelist)})
 
         self.api_extension_manager = stevedore.enabled.EnabledExtensionManager(
             namespace=self.API_EXTENSION_NAMESPACE,
@@ -313,6 +334,17 @@ class APIRouterV3(base_wsgi.Router):
             self.api_extension_manager.map(self._register_resources,
                                            mapper=mapper)
             self.api_extension_manager.map(self._register_controllers)
+
+        if self.admin_api:
+            self.admin_api_ext_mgr = stevedore.enabled.EnabledExtensionManager(
+                namespace=self.ADMIN_API_EXTENSION_NAMESPACE,
+                check_func=_check_load_extension,
+                invoke_on_load=True,
+                invoke_kwds={"extension_info": self.loaded_extension_info})
+            if list(self.admin_api_ext_mgr):
+                self.admin_api_ext_mgr.map(self._register_resources,
+                                           mapper=mapper)
+                self.admin_api_ext_mgr.map(self._register_controllers)
 
         missing_core_extensions = self.get_missing_core_extensions(
             self.loaded_extension_info.get_extensions().keys())
