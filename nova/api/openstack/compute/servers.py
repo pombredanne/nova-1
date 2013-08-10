@@ -1339,7 +1339,10 @@ class Controller(wsgi.Controller):
 
         volumes = None  # will be a list of volume UUIDs
 
-        image = self.compute_api.volume_snapshot(context, instance, volumes)
+        volume_id = '8095db6c-481d-48c0-bd58-51c9fa5ecbb2'
+        new_file = 'volume-%s.snap-asdf' % volume_id
+
+        image = self.compute_api.volume_snapshot(context, instance, volume_id, new_file)
 
         LOG.error('called volume_snapshot!')
         return

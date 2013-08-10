@@ -3944,12 +3944,12 @@ class ComputeManager(manager.SchedulerDependentManager):
                         context, instance, "live_migration.rollback.dest.end",
                         network_info=network_info)
 
-    def volume_snapshot(self, context, instance, volumes):
+    def volume_snapshot(self, context, instance, volume_id, new_file):
         LOG.error("in compute manager.py : calling driver volume_snapshot")
-        import pdb
-        pdb.set_trace()
+        #import pdb
+        #pdb.set_trace()
         #self.compute_rpcapi.volume_snapshot(context, instance)
-        self.driver.volume_snapshot(context, instance, volumes)
+        self.driver.volume_snapshot(context, instance, volume_id, new_file)
 
     def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id):
         self.driver.volume_snapshot_delete(context, instance,

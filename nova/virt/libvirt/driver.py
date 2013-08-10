@@ -1373,20 +1373,21 @@ class LibvirtDriver(driver.ComputeDriver):
         return self._get_volume_block_device_info(bdms)
                                                                               
 
-    def _volume_snapshot(self, context, instance, domain, volumes_TODO=None):
+    def _volume_snapshot(self, context, instance, domain, volume_id, new_file):
         """Perform volume snapshot
            params:
 
-           volumes: list of volume UUIDs to snapshot
-
-           Succeeds if snapshotting of all QCOW2 volumes is successful, and all
-           Cinder volumes initiated successfully (but does not ensure
-           completion).
+           domain: VM to snap
+           volume_id: volume UUID to snapshot
+           new_file: relative path to new qcow2 file present on share
+                     - we don't actually need to know the directory since
+                       libvirt can operate fully with relative paths (verify this!)
+                       
         """
 
         failure = False
 
-        supported_drivers = ['glusterfs']
+        #supported_drivers = ['glusterfs']
        
         import pdb
         pdb.set_trace()
@@ -1404,7 +1405,10 @@ class LibvirtDriver(driver.ComputeDriver):
         
         bdms = self._conductor_api.block_device_mapping_get_all_by_instance(context, 
                                                                          instance)
-        bdms = [bdm for bdm in bdms if bdm['volume_id']]
+
+        # Only interested in searching bdms that are connected volumes
+        bdms = [bdm for bdm in bdms
+                if bdm['volume_id'] and bdm['connection_info']]
                                                     
         LOG.debug("bdms: %s" % bdms)
 
@@ -1419,16 +1423,22 @@ class LibvirtDriver(driver.ComputeDriver):
                 disks_to_skip.append(t.get('dev'))
                 continue
 
+            if node.findtext('serial') != volume_id:
+                disks_to_skip.append(t.get('dev'))
+                continue
+
            
             # node is a Cinder volume
 
             disk_info = {
                 'dev': t.get('dev'),
-                'serial': node.findtext('serial')
+                'serial': node.findtext('serial'),
+                'current_file': node.find('source').get('file')
             }
 
 
-            this_bdm = [elem for elem in bdms if elem['volume_id'] == node.findtext('serial')][0]
+            this_bdm = [elem for elem in bdms if
+                           elem['volume_id'] == node.findtext('serial')].pop()
 
             conn_info = jsonutils.loads(this_bdm['connection_info'])
 
@@ -1437,72 +1447,29 @@ class LibvirtDriver(driver.ComputeDriver):
             LOG.debug("conn_info: %s" % conn_info)
             LOG.debug("info: %s" % info)
 
-            # Determine if this a volume we should qcow2 snapshot
-
-            if conn_info['driver_volume_type'] not in supported_drivers:
-                cinder_vols_to_snap.append(conn_info)
-                disks_to_skip.append(t.get('dev'))
-                continue
-
-            #try:
-            #    result = self.volume_driver_method('snapshot_volume',
-            #                                       conn_info,
-            #                                       instance['name'],
-            #                                       info)
-            #disks_to_skip.append(t.get('dev'))
-            #except Exception as e:
-            #    LOG.exception("hmmm")
-            #    pdb.set_trace()
-
-
-            # call to Cinder client to create snapshot metadata
-            #pdb.set_trace()
-            if self._volume_api is None:
-                self._volume_api = volume.API()
-
             volume_id = disk_info['serial']
 
-            try:
-                # Create record of snapshot in 'creating' status
-                LOG.debug("calling to cinder for volume %s" % volume_id)
-                snapshot = self._volume_api.create_snapshot_metadata(context,
-                                                                     volume_id)
-            except Exception:
-                LOG.exception('cinder client call failed')
-                raise
-
-
-            #pdb.set_trace()
+            # TODO: remove
             hash_str = hashlib.md5(conn_info['data']['export']).hexdigest()  # TODO
 
-            # TODO: get path base from CONF
+            # TODO: remove this
             base_path = '/opt/stack/data/nova/mnt'
             vol_dir = '%s/%s' % (base_path, hash_str)
-            volume_filename = 'volume-%s' % disk_info['serial']
-            snap_path = '%s.%s' % (volume_filename, snapshot['id'])
-            file_path = '%s/%s/%s' % (base_path, hash_str, volume_filename)
-            file_snap_path = '%s.%s' % (file_path, snapshot['id'])
+            #volume_filename = 'volume-%s' % disk_info['serial']
+            #snap_path = '%s.%s' % (volume_filename, snapshot['id'])
+            #file_path = '%s/%s/%s' % (base_path, hash_str, volume_filename)
+            #file_snap_path = '%s.%s' % (file_path, snapshot['id'])
+            file_snap_path = '%s/%s/%s' % (base_path, hash_str, new_file)
 
-            utils.execute('mv', file_path, file_snap_path, run_as_root=True)
+            # See if file_snap_path is there
+            # TODO: remove this, leave this check up to libvirt so we don't have
+            #  to compute hash_str
+            if not os.path.exists(file_snap_path):
+                raise exception.NovaException(
+                   'New snapshot file %s does not exist' % file_snap_path)
 
-            # qemu-img will fail if you provide a relative path
-            #  for file_snap_path here
-            utils.execute('qemu-img', 'create', '-f', 'qcow2',
-                          '-o', 'backing_file=%s' % file_snap_path, file_path,
-                          run_as_root=True)
 
-            # So set it to the relative path here
-            (out, err) = utils.execute('nova-qemu-img', 'rebase', '-u',
-                          vol_dir, snap_path, file_path, run_as_root=True)
-
-            LOG.debug("out: %s\nerr: %s" % (out, err))
-
-            #utils.execute('chmod', 'a+rw', file_path, run_as_root=True)
-            #utils.execute('chmod', 'a+rw', file_snap_path)
-
-            # Go do qemu-img stuff
-
-            disks_to_snap.append((file_path, snapshot))
+            disks_to_snap.append((disk_info['current_file'], file_snap_path))
             #snapshots_to_finalize.append(snapshot)
 
             # TODO: append something to disks_to_snap array
@@ -1515,10 +1482,10 @@ class LibvirtDriver(driver.ComputeDriver):
         xml_disks = etree.Element('disks')
 
 
-        for disk, snapshot in disks_to_snap:
+        for current_name, disk in disks_to_snap:
             LOG.debug("creating xml for disk %s" % disk)
             d = etree.Element('disk',
-                              name = disk,
+                              name = current_name,
                               snapshot='external')
             source = etree.Element('source', file = disk)
 
@@ -1560,42 +1527,42 @@ class LibvirtDriver(driver.ComputeDriver):
         except Exception as e:
             LOG.exception('uh oh 2')
 
-            try:
-                for disk, snapshot in disks_to_snap:
-                    # fail snapshots
-                    self._volume_api.finalize_snapshot_metadata(context,
-                                                                snapshot['id'],
-                                                                'error')
-            except Exception as e:
-                LOG.exception('failed to finalize to error')
-                raise
+            #try:
+            #    for disk, snapshot in disks_to_snap:
+            #        # fail snapshots
+            #        self._volume_api.finalize_snapshot_metadata(context,
+            #                                                    snapshot['id'],
+            #                                                    'error')
+            #except Exception as e:
+            #    LOG.exception('failed to finalize to error')
+            #    raise
+            #
+            #raise
 
-            raise
-
-        for conn_info in cinder_vols_to_snap:
-            # TODO: track whether all of these succeed
-            # force = allow snapshot while 'in-use'
-            try:
-                snap_result = self._volume_api.create_snapshot_force(
-                                   context, conn_info['serial'], None, None)
-                pdb.set_trace()
-                LOG.debug("snap_result: %s" % snap_result)
-                if snap_result['status'] != 'creating':
-                    LOG.error('Failed to create Cinder snapshot for volume %s' %
-                              conn_info['serial'])
-                    failure = True
-            except Exception:
-                # TODO: CinderException? 
-                failure = True
-                continue
+        #for conn_info in cinder_vols_to_snap:
+        #    # TODO: track whether all of these succeed
+        #    # force = allow snapshot while 'in-use'
+        #    try:
+        #        snap_result = self._volume_api.create_snapshot_force(
+        #                           context, conn_info['serial'], None, None)
+        #        pdb.set_trace()
+        #        LOG.debug("snap_result: %s" % snap_result)
+        #        if snap_result['status'] != 'creating':
+        #            LOG.error('Failed to create Cinder snapshot for volume %s' %
+        #                      conn_info['serial'])
+        #            failure = True
+        #    except Exception:
+        #        # TODO: CinderException? 
+        #        failure = True
+        #        continue
 
 
-        for disk, snapshot in disks_to_snap:
-            # mark snapshots as done
-            result = self._volume_api.finalize_snapshot_metadata(context,
-                                                                 snapshot['id'],
-                                                                 'available')
-            pdb.set_trace()
+        #for disk, snapshot in disks_to_snap:
+        #    # mark snapshots as done
+        #    result = self._volume_api.finalize_snapshot_metadata(context,
+        #                                                         snapshot['id'],
+        #                                                         'available')
+        #    pdb.set_trace()
 
 
         # TODO: success = all attempted snapshots succeeded
@@ -1606,7 +1573,7 @@ class LibvirtDriver(driver.ComputeDriver):
         raise NotDone()
 
 
-    def volume_snapshot(self, context, instance, volumes_TODO):
+    def volume_snapshot(self, context, instance, volume_id, new_file):
         """Create snapshots of an instance's volumes with Cinder.
         
            param volumes: list of volume ids to snapshot
@@ -1614,12 +1581,16 @@ class LibvirtDriver(driver.ComputeDriver):
                           TODO: add this back
         """
 
+        import pdb
+        pdb.set_trace()
+
         LOG.debug("in libvirt/driver volume_snapshot...")
         LOG.debug("instance is %s" % instance)
 
-        if CONF.libvirt_type != 'kvm':
-            LOG.debug('hrm')
-            #raise NotImplementedError()
+        # libvirt can figure this out
+        #if CONF.libvirt_type != 'kvm':
+        #    LOG.debug('hrm')
+        #    #raise NotImplementedError()
 
         try:
             virt_dom = self._lookup_by_name(instance['name'])
@@ -1636,7 +1607,7 @@ class LibvirtDriver(driver.ComputeDriver):
         disk_infos = jsonutils.loads(self.get_instance_disk_info(instance['name']))
         LOG.debug("disk_infos: %s" % disk_infos)
     
-        self._volume_snapshot(context, instance, virt_dom, volumes_TODO)
+        self._volume_snapshot(context, instance, virt_dom, volume_id, new_file)
 
 
     def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id):
@@ -1651,8 +1622,8 @@ class LibvirtDriver(driver.ComputeDriver):
 
         LOG.debug('in libvirt/driver volume_snapshot_delete')
 
-        volume_id = '8e6cdefb-c496-4a8d-aed4-8d29dfd5b0bb'
-        snapshot_id = 'ce3ae8de-bfab-4f73-9ea6-ff4eebbf8c83'
+        volume_id = '8095db6c-481d-48c0-bd58-51c9fa5ecbb2'
+        snapshot_id = '18e30e20-429c-4a6d-9cbe-f2bda4328e9e'
 
         try:
             virt_dom = self._lookup_by_name(instance['name'])
@@ -1667,6 +1638,7 @@ class LibvirtDriver(driver.ComputeDriver):
         pdb.set_trace()
 
         my_dev = None
+        active_disk = None
 
         for node in xml_doc.findall('./devices/disk'):
             if node.find('serial') is None:
@@ -1678,9 +1650,11 @@ class LibvirtDriver(driver.ComputeDriver):
 
             if node.findtext('serial') == volume_id:
                 my_dev = node.find('target').get('dev')
+                active_disk = node.find('source').get('file')
                 break
 
-        LOG.debug("found dev, it's %s" % my_dev)
+        LOG.debug("found dev, it's %s, with active disk: %s" % 
+                  (my_dev, active_disk))
 
 
         #####
@@ -1692,22 +1666,50 @@ class LibvirtDriver(driver.ComputeDriver):
         bdms = [bdm for bdm in bdms if bdm['volume_id']]
 
         this_bdm = [elem for elem in bdms if elem['volume_id'] ==
-                      volume_id][0]
+                      volume_id].pop()
 
         conn_info = jsonutils.loads(this_bdm['connection_info'])
 
-        #domain_xml = virt_dom.XMLDesc(0)
-        #xml_doc = etree.fromstring(xml)
-
-        #for node in xml_doc.findall('./devices/disk'):
-        #    t = node.find('target')
-        #    if t is None:
-        #        continue
-        #
-        #    if node.find('serial') == volume_id:
-
         # Need disk path for blockpull operation
         hash_str = hashlib.md5(conn_info['data']['export']).hexdigest()
+
+        #conf_mount_path = '/opt/stack/data/nova/mnt'
+        #path_to_delete = '%s/%s/volume-%s.%s' % (conf_mount_path, hash_str, volume_id, snapshot_id)
+        path_to_delete = 'volume-%s.%s' % (volume_id, snapshot_id)
+
+        """temp"""
+        pdb.set_trace()
+        j = virt_dom.blockPull(path_to_delete)
+
+        backing_file = self._get_qemu_info_for_image(path_to_delete)['backing_file']
+
+        if backing_file == active_disk:
+            try:
+                virt_dom.blockPull(path_to_delete)
+            except Exception as e:
+                LOG.exception(e)
+                raise
+
+            # Need to delete the file we just pulled in
+            self._execute('rm', '-f', backing_file)
+        else:
+            # BlockCommit
+            try:
+                virt_dom.blockCommit(my_dev, backing_file, path_to_delete, bandwidth=0, flags=0)
+            except Exception as e:
+                LOG.exception(e)
+                raise
+
+
+        raise WriteSomeCode()
+
+
+
+
+        ##
+        ##
+        ##
+
 
         # TODO: get this path from conf
         conf_mount_path = '/opt/stack/data/nova/mnt'
@@ -1795,6 +1797,8 @@ class LibvirtDriver(driver.ComputeDriver):
 
         # blockCommit
 
+        pdb.set_trace()
+
         LOG.debug("will commit from %s down into %s" % (current_file, lower_backing_file))
 
         try:
@@ -1816,10 +1820,8 @@ class LibvirtDriver(driver.ComputeDriver):
         for line in output.split('\n'):
             backing_file = None
 
-            #LOG.debug("gbf: line: %s" % line)
             m = re.search('(?<=backing\ file: )(.*)', line)
             if m:
-                #LOG.debug("gbf match")
                 backing_file = m.group(0)
 
             if backing_file is None:
@@ -1840,12 +1842,20 @@ class LibvirtDriver(driver.ComputeDriver):
             if m:
                 return m.group(0)
 
+    def _get_backing_file_format(self, output):
+        # TODO: move this somewhere
+        for line in output.split('\n'):
+            m = re.search(r'(?<=backing\ file\ format: )(.*)', line)
+            if m:
+                return m.group(0)
+
     def _get_qemu_info_for_image(self, current_file):
         (out, err) = utils.execute('qemu-img', 'info', current_file,
                                    run_as_root=True)
         LOG.debug("info: %s" % out)
         return {'backing_file': self._get_backing_file(out),
-                'format': self._get_file_format(out) }
+                'format': self._get_file_format(out),
+                'backing_file_format': self._get_backing_file_format(out) }
 
 
 

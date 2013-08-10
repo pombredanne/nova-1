@@ -708,9 +708,9 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
             topic=_compute_topic(self.topic, ctxt, host, None),
             version='2.31')
 
-    def volume_snapshot(self, ctxt, instance, volumes=None):
+    def volume_snapshot(self, ctxt, instance, volume_id, new_file):
         self.cast(ctxt, self.make_msg('volume_snapshot',
-            instance=instance, volumes=volumes),
+            instance=instance, volume_id=volume_id, new_file=new_file),
             topic=_compute_topic(self.topic, ctxt, None, instance),
             version='2.34')
 

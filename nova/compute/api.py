@@ -1625,14 +1625,14 @@ class API(base.Base):
 
     @wrap_check_policy
     @check_instance_state(vm_state=[vm_states.ACTIVE])
-    def volume_snapshot(self, context, instance, volumes):
+    def volume_snapshot(self, context, instance, volume_id, new_file):
         """Volume snapshots
 
         TODO
         """
 
         LOG.error('in compute/api.py volume_snapshot.. calling compute_rpcapi')
-        self.compute_rpcapi.volume_snapshot(context, instance, volumes)
+        self.compute_rpcapi.volume_snapshot(context, instance, volume_id, new_file)
 
     @wrap_check_policy
     def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id):

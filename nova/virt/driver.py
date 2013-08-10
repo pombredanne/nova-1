@@ -367,13 +367,14 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def volume_snapshot(self, context, instance):
+    def volume_snapshot(self, context, instance, volume_id, new_file):
         """
         Snapshots volumes attached to a specified instance.
 
         :param context: security context
         :param instance: Instance object as returned by DB layer.
-        :param volumes: Volumes to be snapshotted
+        :param volume_id: Volumes to be snapshotted
+        :param new_file: new qcow2 file for snapshot
         """
         raise NotImplementedError()
 

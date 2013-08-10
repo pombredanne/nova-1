@@ -631,6 +631,9 @@ class LibvirtGlusterfsVolumeDriver(LibvirtBaseVolumeDriver):
 
     def connect_volume(self, connection_info, mount_device):
         """Connect the volume. Returns xml for libvirt."""
+        #import pdb
+        #pdb.set_trace()
+
         conf = super(LibvirtGlusterfsVolumeDriver,
                      self).connect_volume(connection_info, mount_device)
         options = connection_info['data'].get('options')
