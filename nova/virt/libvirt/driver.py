@@ -40,6 +40,8 @@ Supports KVM, LXC, QEMU, UML, and XEN.
 
 """
 
+import pdb
+
 import errno
 import eventlet
 import functools
@@ -1463,14 +1465,26 @@ class LibvirtDriver(driver.ComputeDriver):
             hash_str = hashlib.md5(conn_info['data']['export']).hexdigest()  # TODO
 
             # TODO: get path base from CONF
-            file_path = '/opt/stack/data/nova/mnt/%s/volume-%s' % (hash_str, disk_info['serial'])
+            base_path = '/opt/stack/data/nova/mnt'
+            vol_dir = '%s/%s' % (base_path, hash_str)
+            volume_filename = 'volume-%s' % disk_info['serial']
+            snap_path = '%s.%s' % (volume_filename, snapshot['id'])
+            file_path = '%s/%s/%s' % (base_path, hash_str, volume_filename)
             file_snap_path = '%s.%s' % (file_path, snapshot['id'])
 
             utils.execute('mv', file_path, file_snap_path, run_as_root=True)
 
+            # qemu-img will fail if you provide a relative path
+            #  for file_snap_path here
             utils.execute('qemu-img', 'create', '-f', 'qcow2',
                           '-o', 'backing_file=%s' % file_snap_path, file_path,
                           run_as_root=True)
+
+            # So set it to the relative path here
+            (out, err) = utils.execute('nova-qemu-img', 'rebase', '-u',
+                          vol_dir, snap_path, file_path, run_as_root=True)
+
+            LOG.debug("out: %s\nerr: %s" % (out, err))
 
             #utils.execute('chmod', 'a+rw', file_path, run_as_root=True)
             #utils.execute('chmod', 'a+rw', file_snap_path)
@@ -1604,21 +1618,44 @@ class LibvirtDriver(driver.ComputeDriver):
         param snapshot_id: snapshot UUID
         """
 
-        import pdb
+        #import pdb
         pdb.set_trace()
 
         LOG.debug('in libvirt/driver volume_snapshot_delete')
 
-        volume_id = '573f7960-2103-45a3-b13a-06e18661afa1'
-        #snapshot_id = '13a94052-cbf9-47df-acc6-d517d6afadd0'
-        #snapshot_id = '4aa4ba0e-a209-4539-bcef-025056ca900e'
-        #snapshot_id = '74575ddf-0442-476c-a8d9-c46b5bc0583e'
-        snapshot_id = 'f1debe74-e8d7-4492-b4b6-56e9a41e59a0'
+        volume_id = '8e6cdefb-c496-4a8d-aed4-8d29dfd5b0bb'
+        snapshot_id = 'd90a9fb7-52d9-4afa-9974-ea869b83c099'
 
         try:
             virt_dom = self._lookup_by_name(instance['name'])
         except exception.InstanceNotFound:
             raise exception.InstanceNotRunning(instance_id=instance['uuid'])
+
+
+        ##### Find dev name
+        xml = virt_dom.XMLDesc(0)
+        xml_doc = etree.fromstring(xml)
+
+        pdb.set_trace()
+
+        my_dev = None
+
+        for node in xml_doc.findall('./devices/disk'):
+            if node.find('serial') is None:
+                continue
+
+            t = node.find('target')
+            if t is None:
+                continue
+
+            if node.findtext('serial') == volume_id:
+                my_dev = node.find('target').get('dev')
+                break
+
+        LOG.debug("found dev, it's %s" % my_dev)
+
+
+        #####
 
         bdms = self._conductor_api.block_device_mapping_get_all_by_instance(
                    context, instance)
@@ -1645,23 +1682,35 @@ class LibvirtDriver(driver.ComputeDriver):
         hash_str = hashlib.md5(conn_info['data']['export']).hexdigest()
 
         # TODO: get this path from conf
-        root_file_path = '/opt/stack/data/nova/mnt/%s/volume-%s' % (hash_str, volume_id)
-        target_file_path = '%s.%s' % (root_file_path, snapshot_id)
+        conf_mount_path = '/opt/stack/data/nova/mnt'
+        top_file_path = '%s/%s/volume-%s' % (conf_mount_path, hash_str, volume_id)
+        target_file_path = '%s.%s' % (top_file_path, snapshot_id)
 
         # We will merge volume-<vol>-<snap_id> into volume-<vol>[-<snap_id_2>]
 
         pdb.set_trace()
+        pass
+        pass
 
-        current_file = root_file_path
+        current_file = top_file_path
+        LOG.debug("current_file is %s" % current_file)
+
+        depth = 0
+
         while True:
-            (out, err) = utils.execute('qemu-img', 'info', current_file,
-                                       run_as_root=True)
-            LOG.debug("info: %s" % out)
-            backing_file = self._get_backing_file(out)
+            LOG.debug("current_file is %s" % current_file)
+            backing_file = self._get_qemu_info_for_image(current_file)['backing_file']
+            backing_file_rel = backing_file
             if backing_file is None:
                 msg = _("Found no backing file for %s" % current_file)
                 LOG.error(msg)
                 raise exception.InvalidSnapshot(msg)
+
+            backing_file = '%s/%s/%s' % (conf_mount_path,
+                                         hash_str,
+                                         backing_file)
+
+                                         
 
             if backing_file == target_file_path:
                 LOG.debug("will pull from %s into %s" %
@@ -1669,43 +1718,106 @@ class LibvirtDriver(driver.ComputeDriver):
                 break
 
             current_file = backing_file
+            depth += 1
+
+        # TODO: determine if we are doing blockCommit or blockPull
+        # blockCommit = merging a snap into snap below it
+
+        if current_file == top_file_path:
+            # blockPull = merging most recent snap into top-most snap
+            if depth != 0:
+                LOG.error('something broke')
+
+            try:
+                #job_info = virt_dom.blockPull('volume-%s' % volume_id, 0, 0)
+                #job_info = virt_dom.blockPull(my_dev, 0, 0)
+                job_info = virt_dom.blockRebase(my_dev, backing_file, 0, 0)
+                job_status = virt_dom.blockJobInfo(my_dev)
+                LOG.debug("job_status: %s" % job_status)
+
+                # TODO: determine success/failure
+
+                # TODO: delete snap from cinder
+
+                return
+
+            except Exception:
+                # TODO: change to libvirtError
+                LOG.exception('blockpull failed')
+                raise
+
+            # TODO: may need to delete a file
+
+            # TODO: check qcow chain for consistency
+
+
+
+        # Find next backing file
+        lower_backing_file = self._get_qemu_info_for_image(current_file)['backing_file']
+
+        if lower_backing_file is None:
+            # You are at the bottom of a chain of 3+ qcow2 images.  Cannot remove this snapshot.
+            msg = _('Removal of oldest snapshot in this chain is not supported. '
+                    'It may be removed after other snapshots have been removed.')
+            raise InvalidSnapshot(msg)
+
+        lower_backing_file = '%s/%s/%s' % (conf_mount_path,
+                                           hash_str, lower_backing_file)
+
+
+        # blockCommit
+
+        LOG.debug("will commit from %s down into %s" % (current_file, lower_backing_file))
 
         try:
-            #virt_dom.blockPull(current_file, 0, 0)
-            #virt_dom.blockRebase(target_file_path, current_file, 0, 0)
-            #virt_dom.blockCommit(current_file, target_file_path, None, 0, 0)
-            #virt_dom.blockCommit(current_file, None, None, 0, libvirt.VIR_DOMAIN_BLOCK_COMMIT_SHALLOW)
-            pdb.set_trace()
-            temp_path = '%s.temp' % target_file_path
-            virt_dom.blockRebase(current_file, temp_path, 0, 0)
-            #virt_dom.blockRebase(temp_path, target_file_path, 0, 0)
-            virt_dom.blockPull(current_file, target_file_path, 0, 0)
-        except Exception as e:
-            LOG.exception('blockpull failed')
+            # blockCommit(disk, base, top, bandwidth=0, flags=0)
+            f = libvirt.VIR_DOMAIN_BLOCK_COMMIT_SHALLOW
+            virt_dom.blockCommit('vdb', lower_backing_file, current_file, bandwidth=0, flags=0)
+        except libvirt.libvirtError:
+            LOG.exception('blockcommit failed')
+            raise
 
-            pdb.set_trace()
+        # TODO: may need to delete a file
 
-            pass
-            pass
+        # TODO: check qcow chain for consistency
 
-        pdb.set_trace()
-
+        
 
     def _get_backing_file(self, output):
         # TODO: move this somewhere
         for line in output.split('\n'):
+            backing_file = None
+
             #LOG.debug("gbf: line: %s" % line)
             m = re.search('(?<=backing\ file: )(.*)', line)
             if m:
                 #LOG.debug("gbf match")
-                return m.group(0)
+                backing_file = m.group(0)
+
+            if backing_file is None:
+                continue
+
+            # Remove "(actual path: /mnt/asdf/a.img)" suffix added when
+            #  running from a different directory
+            backing_file = re.sub(' \(actual path: .*$', '',
+                                  backing_file, count=1)
+
+            return backing_file
+
 
     def _get_file_format(self, output):
         # TODO: move this somewhere
         for line in output.split('\n'):
-            m = re.search('(?<=file\ format: )(.*)', line)
+            m = re.search(r'(?<=file\ format: )(.*)', line)
             if m:
                 return m.group(0)
+
+    def _get_qemu_info_for_image(self, current_file):
+        (out, err) = utils.execute('qemu-img', 'info', current_file,
+                                   run_as_root=True)
+        LOG.debug("info: %s" % out)
+        return {'backing_file': self._get_backing_file(out),
+                'format': self._get_file_format(out) }
 
 
 
