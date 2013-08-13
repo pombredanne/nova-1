@@ -204,3 +204,8 @@ xenstore-read: CommandFilter, xenstore-read, root
 
 # nova/virt/baremetal/tilera.py: 'rpc.mountd'
 rpc.mountd: CommandFilter, rpc.mountd, root
+
+
+# nova/virt/libvirt/driver.py:
+mv: CommandFilter, mv, root
+nova-qemu-img: CommandFilter, nova-qemu-img, root
