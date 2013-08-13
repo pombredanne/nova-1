@@ -3951,6 +3951,10 @@ class ComputeManager(manager.SchedulerDependentManager):
         #self.compute_rpcapi.volume_snapshot(context, instance)
         self.driver.volume_snapshot(context, instance, volumes)
 
+    def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id):
+        self.driver.volume_snapshot_delete(context, instance,
+                                           volume_id, snapshot_id)
+
     @periodic_task.periodic_task
     def _heal_instance_info_cache(self, context):
         """Called periodically.  On every call, try to update the

@@ -1635,6 +1635,11 @@ class API(base.Base):
         self.compute_rpcapi.volume_snapshot(context, instance, volumes)
 
     @wrap_check_policy
+    def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id):
+        self.compute_rpcapi.volume_snapshot_delete(context, instance,
+                                                   volume_id, snapshot_id)
+
+    @wrap_check_policy
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
     def backup(self, context, instance, name, backup_type, rotation,
                extra_properties=None, image_id=None):
