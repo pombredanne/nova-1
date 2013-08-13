@@ -607,8 +607,8 @@ class LibvirtGlusterfsVolumeDriver(LibvirtBaseVolumeDriver):
 
         """
         try:
-            import pdb
-            pdb.set_trace()
+            #import pdb
+            #pdb.set_trace()
             #return self.connection.lookupByName(instance_name)
             return self.connection._lookup_by_name(instance_name)
         except libvirt.libvirtError as ex:

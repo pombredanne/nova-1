@@ -46,6 +46,7 @@ import functools
 import glob
 import hashlib
 import os
+import re
 import shutil
 import socket
 import sys
@@ -1377,8 +1378,8 @@ class LibvirtDriver(driver.ComputeDriver):
            volumes: list of volume UUIDs to snapshot
         """
        
-        import pdb
-        pdb.set_trace()
+        #import pdb
+        #pdb.set_trace()
 
         xml = domain.XMLDesc(0)
         xml_doc = etree.fromstring(xml)
@@ -1398,7 +1399,7 @@ class LibvirtDriver(driver.ComputeDriver):
         LOG.debug("bdms: %s" % bdms)
 
         for node in xml_doc.findall('./devices/disk'):
-            pdb.set_trace()
+            #pdb.set_trace()
 
             t = node.find('target')
             if t is None:
@@ -1442,8 +1443,8 @@ class LibvirtDriver(driver.ComputeDriver):
             #    pdb.set_trace()
 
 
-            # TODO: call to Cinder client to create snapshot metadata
-            pdb.set_trace()
+            # call to Cinder client to create snapshot metadata
+            #pdb.set_trace()
             if self._volume_api is None:
                 self._volume_api = volume.API()
 
@@ -1458,9 +1459,10 @@ class LibvirtDriver(driver.ComputeDriver):
                 raise
 
 
-            pdb.set_trace()
+            #pdb.set_trace()
             hash_str = hashlib.md5(conn_info['data']['export']).hexdigest()  # TODO
 
+            # TODO: get path base from CONF
             file_path = '/opt/stack/data/nova/mnt/%s/volume-%s' % (hash_str, disk_info['serial'])
             file_snap_path = '%s.%s' % (file_path, snapshot['id'])
 
@@ -1488,9 +1490,6 @@ class LibvirtDriver(driver.ComputeDriver):
         xml_disks = etree.Element('disks')
 
 
-        # TODO: determine path correctly
-        #my_path = '/opt/stack/data/nova/mnt/dc4f8d715fe9de3ff2cb6c235f9bf38b/volume-1e8b345f-9fd9-48ee-8508-07870817d14b'
-
         for disk, snapshot in disks_to_snap:
             LOG.debug("creating xml for disk %s" % disk)
             d = etree.Element('disk',
@@ -1512,27 +1511,25 @@ class LibvirtDriver(driver.ComputeDriver):
 
         xml_snapshot.append(xml_disks)
 
-        pdb.set_trace()
+        #pdb.set_trace()
 
         #LOG.debug("snap xml: %s" % etree.tostring(xml_snapshot))
-
-        snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
-                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
-                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT |
-                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE)
-
-        try:
-            domain.snapshotCreateXML(etree.tostring(xml_snapshot), snap_flags)
-        except Exception as e:
-            LOG.exception('uh oh')
-            LOG.warning('trying again w/o quiescing.')
 
         snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
                       libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
                       libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT)
 
         try:
-            domain.snapshotCreateXML(etree.tostring(xml_snapshot), snap_flags)
+            QUIESCE = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE
+            domain.snapshotCreateXML(etree.tostring(xml_snapshot),
+                                     snap_flags | QUIESCE)
+        except Exception as e:
+            LOG.exception('uh oh')
+            LOG.warning('trying again w/o quiescing.')
+
+        try:
+            domain.snapshotCreateXML(etree.tostring(xml_snapshot),
+                                     snap_flags)
         except Exception as e:
             LOG.exception('uh oh 2')
 
@@ -1555,9 +1552,12 @@ class LibvirtDriver(driver.ComputeDriver):
                                                         'available')
 
         for conn_info in cinder_vols_to_snap:
+            # TODO: track whether all of these succeed
             self._volume_api.create_snapshot(context,
                                              conn_info['serial'], None, None)
 
+
+        # TODO: success = all attempted snapshots succeeded
 
         raise NotDone()
 
@@ -1582,8 +1582,6 @@ class LibvirtDriver(driver.ComputeDriver):
         except exception.InstanceNotFound:
             raise exception.InstanceNotRunning(instance_id=instance['uuid'])
 
-        LOG.debug("guess we found an instance... ok")
-
 
         # Let's see what volumes are attached to this instance
         # block device mapping table knows this
@@ -1594,13 +1592,121 @@ class LibvirtDriver(driver.ComputeDriver):
         disk_infos = jsonutils.loads(self.get_instance_disk_info(instance['name']))
         LOG.debug("disk_infos: %s" % disk_infos)
     
-        # ???
-        # What's in our database?
-
-        # ok...
         self._volume_snapshot(context, instance, virt_dom, volumes_TODO)
 
         raise NotImplementedError('write some code')
+
+
+    def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id):
+        """
+        param instance: instance reference
+        param volume_id: volume UUID (higher level can call cinderclient getsnapshot to retrieve this id)
+        param snapshot_id: snapshot UUID
+        """
+
+        import pdb
+        pdb.set_trace()
+
+        LOG.debug('in libvirt/driver volume_snapshot_delete')
+
+        volume_id = '573f7960-2103-45a3-b13a-06e18661afa1'
+        #snapshot_id = '13a94052-cbf9-47df-acc6-d517d6afadd0'
+        #snapshot_id = '4aa4ba0e-a209-4539-bcef-025056ca900e'
+        #snapshot_id = '74575ddf-0442-476c-a8d9-c46b5bc0583e'
+        snapshot_id = 'f1debe74-e8d7-4492-b4b6-56e9a41e59a0'
+
+        try:
+            virt_dom = self._lookup_by_name(instance['name'])
+        except exception.InstanceNotFound:
+            raise exception.InstanceNotRunning(instance_id=instance['uuid'])
+
+        bdms = self._conductor_api.block_device_mapping_get_all_by_instance(
+                   context, instance)
+
+        # Eliminate bdms w/o volume_id
+        bdms = [bdm for bdm in bdms if bdm['volume_id']]
+
+        this_bdm = [elem for elem in bdms if elem['volume_id'] ==
+                      volume_id][0]
+
+        conn_info = jsonutils.loads(this_bdm['connection_info'])
+
+        #domain_xml = virt_dom.XMLDesc(0)
+        #xml_doc = etree.fromstring(xml)
+
+        #for node in xml_doc.findall('./devices/disk'):
+        #    t = node.find('target')
+        #    if t is None:
+        #        continue
+        #
+        #    if node.find('serial') == volume_id:
+
+        # Need disk path for blockpull operation
+        hash_str = hashlib.md5(conn_info['data']['export']).hexdigest()
+
+        # TODO: get this path from conf
+        root_file_path = '/opt/stack/data/nova/mnt/%s/volume-%s' % (hash_str, volume_id)
+        target_file_path = '%s.%s' % (root_file_path, snapshot_id)
+
+        # We will merge volume-<vol>-<snap_id> into volume-<vol>[-<snap_id_2>]
+
+        pdb.set_trace()
+
+        current_file = root_file_path
+        while True:
+            (out, err) = utils.execute('qemu-img', 'info', current_file,
+                                       run_as_root=True)
+            LOG.debug("info: %s" % out)
+            backing_file = self._get_backing_file(out)
+            if backing_file is None:
+                msg = _("Found no backing file for %s" % current_file)
+                LOG.error(msg)
+                raise exception.InvalidSnapshot(msg)
+
+            if backing_file == target_file_path:
+                LOG.debug("will pull from %s into %s" %
+                          (target_file_path, current_file))
+                break
+
+            current_file = backing_file
+
+        try:
+            #virt_dom.blockPull(current_file, 0, 0)
+            #virt_dom.blockRebase(target_file_path, current_file, 0, 0)
+            #virt_dom.blockCommit(current_file, target_file_path, None, 0, 0)
+            #virt_dom.blockCommit(current_file, None, None, 0, libvirt.VIR_DOMAIN_BLOCK_COMMIT_SHALLOW)
+            pdb.set_trace()
+            temp_path = '%s.temp' % target_file_path
+            virt_dom.blockRebase(current_file, temp_path, 0, 0)
+            #virt_dom.blockRebase(temp_path, target_file_path, 0, 0)
+            virt_dom.blockPull(current_file, target_file_path, 0, 0)
+        except Exception as e:
+            LOG.exception('blockpull failed')
+
+            pdb.set_trace()
+
+            pass
+            pass
+
+        pdb.set_trace()
+
+
+    def _get_backing_file(self, output):
+        # TODO: move this somewhere
+        for line in output.split('\n'):
+            #LOG.debug("gbf: line: %s" % line)
+            m = re.search('(?<=backing\ file: )(.*)', line)
+            if m:
+                #LOG.debug("gbf match")
+                return m.group(0)
+
+    def _get_file_format(self, output):
+        # TODO: move this somewhere
+        for line in output.split('\n'):
+            m = re.search('(?<=file\ format: )(.*)', line)
+            if m:
+                return m.group(0)
+
 
 
     def reboot(self, context, instance, network_info, reboot_type='SOFT',
