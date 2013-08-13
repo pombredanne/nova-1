@@ -1220,19 +1220,22 @@ class Controller(wsgi.Controller):
     @wsgi.action('rebuild')
     def _action_rebuild(self, req, id, body):
         """Rebuild an instance with the given attributes."""
-        try:
-            body = body['rebuild']
-        except (KeyError, TypeError):
-            msg = _('Invalid request body')
-            raise exc.HTTPBadRequest(explanation=msg)
+        import pdb
+        pdb.set_trace()
 
-        try:
-            image_href = body["imageRef"]
-        except (KeyError, TypeError):
-            msg = _("Could not parse imageRef from request.")
-            raise exc.HTTPBadRequest(explanation=msg)
+        #try:
+        #    body = body['rebuild']
+        #except (KeyError, TypeError):
+        #    msg = _('Invalid request body')
+        #    raise exc.HTTPBadRequest(explanation=msg)
 
-        image_href = self._image_uuid_from_href(image_href)
+        #try:
+        #    image_href = body["imageRef"]
+        #except (KeyError, TypeError):
+        #    msg = _("Could not parse imageRef from request.")
+        #    raise exc.HTTPBadRequest(explanation=msg)
+
+        #image_href = self._image_uuid_from_href(image_href)
 
         try:
             password = body['adminPass']
@@ -1241,6 +1244,10 @@ class Controller(wsgi.Controller):
 
         context = req.environ['nova.context']
         instance = self._get_server(context, req, id)
+
+        result = self.compute_api.volume_snapshot_delete(context, instance, 'asdf', 'asdf')
+
+        raise NotImplementedError()
 
         attr_map = {
             'personality': 'files_to_inject',

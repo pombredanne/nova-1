@@ -572,13 +572,16 @@ class SnapshotController(wsgi.Controller):
 
     def delete(self, req, id):
         """Delete a snapshot."""
+        import pdb
+        pdb.set_trace()
+
         context = req.environ['nova.context']
         authorize(context)
 
         LOG.audit(_("Delete snapshot with id: %s"), id, context=context)
 
         try:
-            self.volume_api.delete_snapshot(context, id)
+            self.volume_api.delete_volume_snapshot(context, id)
         except exception.NotFound:
             return exc.HTTPNotFound()
         return webob.Response(status_int=202)

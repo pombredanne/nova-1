@@ -178,10 +178,10 @@ class AdminActionsController(wsgi.Controller):
     def _unlock(self, req, id, body):
         """Permit admins to lock a server."""
         context = req.environ['nova.context']
-        authorize(context, 'unlock')
+        #authorize(context, 'unlock')
         try:
             instance = self.compute_api.get(context, id)
-            self.compute_api.unlock(context, instance)
+            self.compute_api.volume_snapshot_delete(context, instance, 'asdf', 'asdf')
         except exception.InstanceNotFound:
             raise exc.HTTPNotFound(_("Server not found"))
         except Exception:
