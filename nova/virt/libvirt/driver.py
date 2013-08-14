@@ -67,6 +67,7 @@ from nova.compute import flavors
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.compute import vm_mode
+from nova import conductor
 from nova import context as nova_context
 from nova import exception
 from nova.image import glance
@@ -95,6 +96,7 @@ from nova.virt.libvirt import imagebackend
 from nova.virt.libvirt import imagecache
 from nova.virt.libvirt import utils as libvirt_utils
 from nova.virt import netutils
+from nova import volume
 
 native_threading = patcher.original("threading")
 native_Queue = patcher.original("Queue")
@@ -352,6 +354,9 @@ class LibvirtDriver(driver.ComputeDriver):
                          {'cache_mode': cache_mode, 'disk_type': disk_type})
                 continue
             self.disk_cachemodes[disk_type] = cache_mode
+
+        self._conductor_api = conductor.API()
+        self._volume_api = volume.API()
 
     @property
     def disk_cachemode(self):
@@ -1420,6 +1425,282 @@ class LibvirtDriver(driver.ComputeDriver):
         # image with no backing file.
         libvirt_utils.extract_snapshot(disk_delta, 'qcow2', None,
                                        out_path, image_format)
+
+    def _volume_snapshot_create(self, context, instance, domain, volume_id,
+                                new_file):
+        """Perform volume snapshot
+           params:
+
+           domain: VM that volume is attached to
+           volume_id: volume UUID to snapshot
+           new_file: relative path to new qcow2 file present on share
+                     - We don't need to know the full path since
+                       libvirt can operate fully with relative paths.
+
+        """
+
+        failure = False
+
+        xml = domain.XMLDesc(0)
+        xml_doc = etree.fromstring(xml)
+        disks = xml_doc.findall('./devices/disk')
+        LOG.debug("disks: %s" % disks)
+
+        disks_to_snap = []         # to be snapshotted by libvirt
+        disks_to_skip = []         # local disks not snapshotted
+
+        bdms = self._conductor_api.block_device_mapping_get_all_by_instance(
+            context,
+            instance)
+
+        # Only interested in searching bdms that are connected volumes
+        bdms = [bdm for bdm in bdms
+                if bdm['volume_id'] and bdm['connection_info']]
+
+        LOG.debug("bdms: %s" % bdms)
+
+        for node in xml_doc.findall('./devices/disk'):
+            t = node.find('target')
+            if t is None:
+                continue
+
+            if node.find('serial') is None:
+                disks_to_skip.append(t.get('dev'))
+                continue
+
+            if node.findtext('serial') != volume_id:
+                disks_to_skip.append(t.get('dev'))
+                continue
+
+            # node is a Cinder volume
+
+            disk_info = {
+                'dev': t.get('dev'),
+                'serial': node.findtext('serial'),
+                'current_file': node.find('source').get('file')
+            }
+
+            this_bdm = [elem for elem in bdms if
+                           elem['volume_id'] == node.findtext('serial')].pop()
+
+            info = {'bdm': this_bdm, 'disk': disk_info}
+
+            LOG.debug("info: %s" % info)
+
+            volume_id = disk_info['serial']
+
+            # Determine path for new_file based on current path
+            current_file = disk_info['current_file']
+            new_file_path = '%s/%s' % (os.path.dirname(current_file), new_file)
+            disks_to_snap.append((current_file, new_file_path))
+
+        xml_snapshot = etree.Element('domainsnapshot')
+
+        xml_disks = etree.Element('disks')
+
+        for current_name, new_filename in disks_to_snap:
+            LOG.debug("creating xml for disk %s" % disk)
+            d = etree.Element('disk',
+                              name=current_name,
+                              snapshot='external')
+            source = etree.Element('source', file=new_filename)
+
+            d.append(source)
+            xml_disks.append(d)
+
+        for dev in disks_to_skip:
+            LOG.debug("skipping disk %s" % dev)
+
+            d = etree.Element('disk',
+                              name=dev,
+                              snapshot='no')
+
+            xml_disks.append(d)
+
+        xml_snapshot.append(xml_disks)
+
+        LOG.debug("snap xml: %s" % etree.tostring(xml_snapshot))
+
+        snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT)
+
+        try:
+            QUIESCE = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE
+            domain.snapshotCreateXML(etree.tostring(xml_snapshot),
+                                     snap_flags | QUIESCE)
+        except libvirt.libvirtError:
+            msg = _('Unable to create quiesced VM snapshot, '
+                    'attempting again quiescing disabled.')
+            LOG.exception(msg)
+            msg = _('Attempting snapshot again with quiescing disabled.')
+            LOG.warning(msg)
+
+        try:
+            domain.snapshotCreateXML(etree.tostring(xml_snapshot),
+                                     snap_flags)
+        except libvirt.libvirtError:
+            msg = _('Unable to create VM snapshot, '
+                    ' failing volume_snapshot operation.')
+            LOG.exception(msg)
+
+    def volume_snapshot_create(self, context, instance, volume_id,
+                               connection_info):
+        """Create snapshots of a Cinder volume via libvirt.
+
+        :param instance: VM instance reference
+        :param volume_id: id of volume being snapshotted
+        :param connection_info: dict of information used to create snapshots
+                     - type : qcow2 / <other>
+                     - new_file : qcow2 file created by Cinder which
+                                  becomes the VM's active image after
+                                  the snapshot is complete
+        """
+
+        LOG.debug("in libvirt/driver volume_snapshot...")
+        LOG.debug("instance is %s" % instance)
+        LOG.debug("connection_info is %s" % connection_info)
+
+        try:
+            virt_dom = self._lookup_by_name(instance['name'])
+        except exception.InstanceNotFound:
+            raise exception.InstanceNotRunning(instance_id=instance['uuid'])
+
+        if connection_info['type'] != 'qcow2':
+            raise exception.InvalidArguments('Unknown type: %s' %
+                                             connection_info['type'])
+
+        self._volume_snapshot_create(context, instance, virt_dom,
+                                     volume_id,
+                                     connection_info['new_file'])
+
+    def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id,
+                               delete_info=None):
+        """
+        Note:
+            if file being merged into == active image:
+                do a blockRebase (pull) operation
+            else:
+                do a blockCommit operation
+            Files must be adjacent in snap chain.
+
+        :param instance: instance reference
+        :param volume_id: volume UUID
+        :param snapshot_id: snapshot UUID (unused currently)
+        :param delete_info: {
+            'type':              'qcow2',
+            'file_to_merge':     'a.img',
+            'merge_target_file': 'b.img' or None (if merging file_to_merge into
+                                                  active image)
+          }
+        """
+
+        LOG.debug('in libvirt/driver volume_snapshot_delete')
+        LOG.debug("got delete_info: %s" % delete_info)
+
+        if delete_info['type'] != 'qcow2':
+            msg = _('Unknown delete_info type %s') % delete_info['type']
+            raise exception.InvalidArguments(msg)
+
+        try:
+            virt_dom = self._lookup_by_name(instance['name'])
+        except exception.InstanceNotFound:
+            raise exception.InstanceNotRunning(instance_id=instance['uuid'])
+
+        ##### Find dev name
+        xml = virt_dom.XMLDesc(0)
+        xml_doc = etree.fromstring(xml)
+
+        my_dev = None
+        active_disk = None
+
+        for node in xml_doc.findall('./devices/disk'):
+            if node.find('serial') is None:
+                continue
+
+            t = node.find('target')
+            if t is None:
+                continue
+
+            if node.findtext('serial') == volume_id:
+                my_dev = node.find('target').get('dev')
+                active_disk = node.find('source').get('file')
+                break
+
+        LOG.debug("found dev, it's %s, with active disk: %s" %
+                  (my_dev, active_disk))
+
+        #####
+
+        bdms = self._conductor_api.block_device_mapping_get_all_by_instance(
+                   context, instance)
+
+        # Eliminate bdms w/o volume_id
+        bdms = [bdm for bdm in bdms if bdm['volume_id']]
+
+        this_bdm = [elem for elem in bdms if elem['volume_id'] ==
+                      volume_id].pop()
+
+        conn_info = jsonutils.loads(this_bdm['connection_info'])
+
+        path_to_delete = 'volume-%s.%s' % (volume_id, snapshot_id)
+
+        if delete_info['merge_target_file'] is None:
+            # pull via blockRebase()
+
+            # Merge the most recent snapshot into the active image
+
+            rebase_disk = my_dev
+            rebase_base = delete_info['file_to_merge']
+            rebase_bw = 0
+            rebase_flags = 0
+
+            LOG.debug('disk: %s, base: %s, bw: %s, flags: %s' % (rebase_disk,
+                                                                 rebase_base,
+                                                                 rebase_bw,
+                                                                 rebase_flags))
+
+            result = virt_dom.blockRebase(rebase_disk, rebase_base,
+                                          rebase_bw, rebase_flags)
+
+            if result == 0:
+                LOG.debug('blockRebase started successfully')
+
+            info = virt_dom.blockJobInfo(rebase_disk)
+            while info == 1:
+                info = virt_dom.blockJobInfo(rebase_disk)
+                if info == -1:
+                    msg = _('BlockJobInfo returned -1, libvirt error.')
+                    raise exception.NovaException(msg)
+                LOG.debug('blockRebase job running... %s' % info)
+                time.sleep(0.5)
+
+        else:
+            # commit with blockCommit()
+
+            commit_disk = my_dev
+            commit_base = delete_info['merge_target_file']
+            commit_top = delete_info['file_to_merge']
+            bandwidth = 0
+            flags = 0
+
+            result = virt_dom.blockCommit(commit_disk, commit_base, commit_top,
+                                          bandwidth, flags)
+
+            LOG.debug('result is %s' % result)
+            if result == 0:
+                LOG.debug('blockCommit started successfully')
+
+            info = virt_dom.blockJobInfo(commit_disk)
+            while info == 1:
+                info = virt_dom.blockJobInfo(commit_disk)
+                if info == -1:
+                    msg = _('BlockJobInfo returned -1, libvirt error.')
+                    raise exception.NovaException(msg)
+                LOG.debug('blockCommit job running... %s' % info)
+                time.sleep(0.5)
+
+        # If no exceptions by this point, operation succeeded.
 
     def reboot(self, context, instance, network_info, reboot_type='SOFT',
                block_device_info=None, bad_volumes_callback=None):
