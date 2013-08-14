@@ -975,6 +975,7 @@ class LibvirtConfigGuestSnapshotTest(LibvirtConfigBaseTest):
         self.assertXmlEqual(xml, """
             <domainsnapshot>
               <name>Demo</name>
+              <disks/>
             </domainsnapshot>""")
 
 
