@@ -192,6 +192,7 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         2.36 - Made pause_instance() and unpause_instance() take new-world
                instance objects
         2.37 - Added the leagacy_bdm_in_spec parameter to run_instance
+        2.38 - Add volume_snapshot_create(), volume_snapshot_delete()
     '''
 
     #
@@ -740,6 +741,23 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
             instance=instance, image=image),
             topic=_compute_topic(self.topic, ctxt, host, None),
             version='2.31')
+
+    def volume_snapshot_create(self, ctxt, instance, volume_id,
+                               create_info):
+        instance_p = jsonutils.to_primitive(instance)
+        msg = self.make_msg('volume_snapshot_create', instance=instance_p,
+                volume_id=volume_id, create_info=create_info)
+        topic = _compute_topic(self.topic, ctxt, None, instance)
+        self.cast(ctxt, msg, topic=topic, version='2.38')
+
+    def volume_snapshot_delete(self, ctxt, instance, volume_id, snapshot_id,
+                               delete_info):
+        instance_p = jsonutils.to_primitive(instance)
+        msg = self.make_msg('volume_snapshot_delete', instance=instance_p,
+                volume_id=volume_id, snapshot_id=snapshot_id,
+                delete_info=delete_info)
+        topic = _compute_topic(self.topic, ctxt, None, instance)
+        self.cast(ctxt, msg, topic=topic, version='2.38')
 
 
 class SecurityGroupAPI(nova.openstack.common.rpc.proxy.RpcProxy):
