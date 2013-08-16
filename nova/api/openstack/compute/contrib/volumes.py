@@ -25,6 +25,7 @@ from nova.api.openstack import xmlutil
 from nova import compute
 from nova import exception
 from nova.openstack.common.gettextutils import _
+from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import strutils
 from nova.openstack.common import uuidutils
@@ -599,8 +600,10 @@ class SnapshotsTemplate(xmlutil.TemplateBuilder):
 class SnapshotController(wsgi.Controller):
     """The Volumes API controller for the OpenStack API."""
 
-    def __init__(self):
+    def __init__(self, ext_mgr=None):
+        self.compute_api = compute.API()
         self.volume_api = volume.API()
+        self.ext_mgr = ext_mgr
         super(SnapshotController, self).__init__()
 
     @wsgi.serializers(xml=SnapshotTemplate)
@@ -616,6 +619,30 @@ class SnapshotController(wsgi.Controller):
 
         return {'snapshot': _translate_snapshot_detail_view(context, vol)}
 
+    def _delete_normal_snapshot(self, context, snapshot_id):
+        try:
+            self.volume_api.delete_snapshot(context, snapshot_id)
+        except exception.NotFound:
+            return exc.HTTPNotFound()
+        return webob.Response(status_int=202)
+
+    def _delete_assisted_snapshot(self, context, snapshot_id, delete_metadata):
+        if not self.ext_mgr.is_loaded('os-assisted-volume-snapshots'):
+            raise webob.exc.HTTPForbidden()
+
+        try:
+            delete_info = jsonutils.loads(delete_metadata['delete_info'])
+            volume_id = delete_info['volume_id']
+        except (KeyError, ValueError):
+            raise webob.exc.HTTPBadRequest()
+
+        try:
+            self.compute_api.volume_snapshot_delete(context, volume_id,
+                    snapshot_id, delete_info)
+        except exception.NotFound:
+            return exc.HTTPNotFound()
+        return webob.Response(status_int=202)
+
     def delete(self, req, id):
         """Delete a snapshot."""
         context = req.environ['nova.context']
@@ -623,11 +650,13 @@ class SnapshotController(wsgi.Controller):
 
         LOG.audit(_("Delete snapshot with id: %s"), id, context=context)
 
-        try:
-            self.volume_api.delete_snapshot(context, id)
-        except exception.NotFound:
-            return exc.HTTPNotFound()
-        return webob.Response(status_int=202)
+        delete_metadata = {}
+        delete_metadata.update(req.GET)
+
+        if delete_metadata.get('assisted', False):
+            return self._delete_assisted_snapshot(context, id, delete_metadata)
+        else:
+            return self._delete_normal_snapshot(context, id)
 
     @wsgi.serializers(xml=SnapshotsTemplate)
     def index(self, req):
@@ -649,21 +678,7 @@ class SnapshotController(wsgi.Controller):
         res = [entity_maker(context, snapshot) for snapshot in limited_list]
         return {'snapshots': res}
 
-    @wsgi.serializers(xml=SnapshotTemplate)
-    def create(self, req, body):
-        """Creates a new snapshot."""
-        context = req.environ['nova.context']
-        authorize(context)
-
-        if not self.is_valid_body(body, 'snapshot'):
-            raise exc.HTTPUnprocessableEntity()
-
-        snapshot = body['snapshot']
-        volume_id = snapshot['volume_id']
-
-        LOG.audit(_("Create snapshot from volume %s"), volume_id,
-                  context=context)
-
+    def _create_normal_snapshot(self, context, volume_id, snapshot):
         force = snapshot.get('force', False)
         try:
             force = strutils.bool_from_string(force, strict=True)
@@ -682,6 +697,36 @@ class SnapshotController(wsgi.Controller):
 
         retval = _translate_snapshot_detail_view(context, new_snapshot)
         return {'snapshot': retval}
+
+    def _create_assisted_snapshot(self, context, volume_id, snapshot):
+        if not self.ext_mgr.is_loaded('os-assisted-volume-snapshots'):
+            raise webob.exc.HTTPForbidden()
+
+        if 'create_info' not in snapshot:
+            raise webob.exc.HTTPBadRequest()
+
+        return self.compute_api.volume_snapshot_create(context, volume_id,
+                snapshot['create_info'])
+
+    @wsgi.serializers(xml=SnapshotTemplate)
+    def create(self, req, body):
+        """Creates a new snapshot."""
+        context = req.environ['nova.context']
+        authorize(context)
+
+        if not self.is_valid_body(body, 'snapshot'):
+            raise exc.HTTPUnprocessableEntity()
+
+        snapshot = body['snapshot']
+        volume_id = snapshot['volume_id']
+
+        LOG.audit(_("Create snapshot from volume %s"), volume_id,
+                  context=context)
+
+        if snapshot.get('assisted', False):
+            return self._create_assisted_snapshot(context, volume_id, snapshot)
+        else:
+            return self._create_normal_snapshot(context, volume_id, snapshot)
 
 
 class Volumes(extensions.ExtensionDescriptor):
@@ -715,7 +760,7 @@ class Volumes(extensions.ExtensionDescriptor):
         resources.append(res)
 
         res = extensions.ResourceExtension('os-snapshots',
-                                        SnapshotController(),
+                                        SnapshotController(self.ext_mgr),
                                         collection_actions={'detail': 'GET'})
         resources.append(res)
 
