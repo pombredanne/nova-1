@@ -79,6 +79,16 @@ def fake_delete_snapshot(self, context, snapshot_id):
     pass
 
 
+def fake_compute_volume_snapshot_delete(self, context, volume_id, snapshot_id,
+                                        delete_info):
+    pass
+
+
+def fake_compute_volume_snapshot_create(self, context, volume_id,
+                                        create_info):
+    pass
+
+
 def fake_get_instance_bdms(self, context, instance):
     return [{'id': 1,
              'instance_uuid': instance['uuid'],
@@ -751,11 +761,18 @@ class UnprocessableSnapshotTestCase(CommonUnprocessableEntityTestCase,
 class CreateSnapshotTestCase(test.TestCase):
     def setUp(self):
         super(CreateSnapshotTestCase, self).setUp()
-        self.controller = volumes.SnapshotController()
+
+        class FakeExtMgr(object):
+            def is_loaded(self, *args, **kwargs):
+                return True
+
+        self.controller = volumes.SnapshotController(FakeExtMgr())
         self.stubs.Set(cinder.API, 'get', fake_get_volume)
         self.stubs.Set(cinder.API, 'create_snapshot_force',
                        fake_create_snapshot)
         self.stubs.Set(cinder.API, 'create_snapshot', fake_create_snapshot)
+        self.stubs.Set(compute_api.API, 'volume_snapshot_create',
+                       fake_compute_volume_snapshot_create)
         self.req = fakes.HTTPRequest.blank('/v2/fake/os-snapshots')
         self.req.method = 'POST'
         self.body = {'snapshot': {'volume_id': 1}}
@@ -773,16 +790,28 @@ class CreateSnapshotTestCase(test.TestCase):
         self.assertRaises(exception.InvalidParameterValue,
                           self.controller.create, self.req, body=self.body)
 
+    def test_create_assisted(self):
+        self.body['snapshot']['assisted'] = True
+        self.body['snapshot']['create_info'] = {}
+        self.controller.create(self.req, body=self.body)
+
 
 class DeleteSnapshotTestCase(test.TestCase):
     def setUp(self):
         super(DeleteSnapshotTestCase, self).setUp()
-        self.controller = volumes.SnapshotController()
+
+        class FakeExtMgr(object):
+            def is_loaded(self, *args, **kwargs):
+                return True
+
+        self.controller = volumes.SnapshotController(FakeExtMgr())
         self.stubs.Set(cinder.API, 'get', fake_get_volume)
         self.stubs.Set(cinder.API, 'create_snapshot_force',
                        fake_create_snapshot)
         self.stubs.Set(cinder.API, 'create_snapshot', fake_create_snapshot)
         self.stubs.Set(cinder.API, 'delete_snapshot', fake_delete_snapshot)
+        self.stubs.Set(compute_api.API, 'volume_snapshot_delete',
+                       fake_compute_volume_snapshot_delete)
         self.req = fakes.HTTPRequest.blank('/v2/fake/os-snapshots')
 
     def test_normal_delete(self):
@@ -790,6 +819,21 @@ class DeleteSnapshotTestCase(test.TestCase):
         self.body = {'snapshot': {'volume_id': 1}}
         result = self.controller.create(self.req, body=self.body)
 
+        self.req.method = 'DELETE'
+        result = self.controller.delete(self.req, result['snapshot']['id'])
+        self.assertEqual(result.status_int, 202)
+
+    def test_assisted_delete(self):
+        self.req.method = 'POST'
+        self.body = {'snapshot': {'volume_id': 1}}
+        result = self.controller.create(self.req, body=self.body)
+
+        params = {
+            'assisted': True,
+            'delete_info': jsonutils.dumps({'volume_id': 1}),
+        }
+        self.req = fakes.HTTPRequest.blank('/v2/fake/os-snapshots?%s' %
+                '&'.join(['%s=%s' % (k, v) for k, v in params.iteritems()]))
         self.req.method = 'DELETE'
         result = self.controller.delete(self.req, result['snapshot']['id'])
         self.assertEqual(result.status_int, 202)

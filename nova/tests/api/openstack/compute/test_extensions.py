@@ -144,11 +144,15 @@ class ExtensionTestCase(test.TestCase):
     def setUp(self):
         super(ExtensionTestCase, self).setUp()
         ext_list = CONF.osapi_compute_extension[:]
+        admin_ext_list = CONF.osapi_compute_admin_extension[:]
         fox = ('nova.tests.api.openstack.compute.extensions.'
                'foxinsocks.Foxinsocks')
         if fox not in ext_list:
             ext_list.append(fox)
             self.flags(osapi_compute_extension=ext_list)
+        if fox not in admin_ext_list:
+            admin_ext_list.append(fox)
+            self.flags(osapi_compute_admin_extension=admin_ext_list)
         self.fake_context = nova.context.RequestContext('fake', 'fake')
 
     def test_extension_authorizer_throws_exception_if_policy_fails(self):
@@ -234,8 +238,20 @@ class ExtensionControllerTest(ExtensionTestCase):
             ]
         self.ext_list.sort()
 
-    def test_list_extensions_json(self):
-        app = compute.APIRouter(init_only=('extensions',))
+        self.ext_list_admin = [
+            "AssistedVolumeSnapshots",
+            ]
+        self.ext_list_admin.extend(self.ext_list)
+        self.ext_list_admin.sort()
+
+    def _test_list_extensions_json(self, admin=False):
+        if admin:
+            app = compute.AdminAPIRouter(init_only=('extensions',))
+            ext_list = self.ext_list_admin
+        else:
+            app = compute.APIRouter(init_only=('extensions',))
+            ext_list = self.ext_list
+
         request = webob.Request.blank("/fake/extensions")
         response = request.get_response(app)
         self.assertEqual(200, response.status_int)
@@ -243,9 +259,9 @@ class ExtensionControllerTest(ExtensionTestCase):
         # Make sure we have all the extensions, extra extensions being OK.
         data = jsonutils.loads(response.body)
         names = [str(x['name']) for x in data['extensions']
-                 if str(x['name']) in self.ext_list]
+                 if str(x['name']) in ext_list]
         names.sort()
-        self.assertEqual(names, self.ext_list)
+        self.assertEqual(names, ext_list)
 
         # Ensure all the timestamps are valid according to iso8601
         for ext in data['extensions']:
@@ -270,6 +286,12 @@ class ExtensionControllerTest(ExtensionTestCase):
             response = request.get_response(app)
             output = jsonutils.loads(response.body)
             self.assertEqual(output['extension']['alias'], ext['alias'])
+
+    def test_list_extensions_json(self):
+        self._test_list_extensions_json()
+
+    def test_list_admin_extensions_json(self):
+        self._test_list_extensions_json(admin=True)
 
     def test_get_extension_json(self):
         app = compute.APIRouter(init_only=('extensions',))
