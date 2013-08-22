@@ -1426,16 +1426,14 @@ class LibvirtDriver(driver.ComputeDriver):
         libvirt_utils.extract_snapshot(disk_delta, 'qcow2', None,
                                        out_path, image_format)
 
-    def _volume_snapshot_create(self, context, instance, domain, volume_id,
-                                new_file):
-        """Perform volume snapshot
-           params:
+    def _volume_snapshot_create(self, context, instance, domain,
+                                volume_id, snapshot_id, new_file):
+        """Perform volume snapshot.
 
-           domain: VM that volume is attached to
-           volume_id: volume UUID to snapshot
-           new_file: relative path to new qcow2 file present on share
-                     - We don't need to know the full path since
-                       libvirt can operate fully with relative paths.
+           :param domain: VM that volume is attached to
+           :param volume_id: volume UUID to snapshot
+           :param snapshot_id: UUID of snapshot being created
+           :param new_file: relative path to new qcow2 file present on share
 
         """
 
@@ -1531,7 +1529,7 @@ class LibvirtDriver(driver.ComputeDriver):
                                      snap_flags | QUIESCE)
         except libvirt.libvirtError:
             msg = _('Unable to create quiesced VM snapshot, '
-                    'attempting again quiescing disabled.')
+                    'attempting again with quiescing disabled.')
             LOG.exception(msg)
             msg = _('Attempting snapshot again with quiescing disabled.')
             LOG.warning(msg)
@@ -1544,6 +1542,18 @@ class LibvirtDriver(driver.ComputeDriver):
                     ' failing volume_snapshot operation.')
             LOG.exception(msg)
 
+            self._volume_api.update_snapshot_metadata(
+                context,
+                snapshot_id,
+                'error',
+                progress='99%')
+
+            raise
+
+        self._volume_api.update_snapshot_metadata(
+            context, snapshot_id, 'creating', progress='90%')
+
+
     def volume_snapshot_create(self, context, instance, volume_id,
                                connection_info):
         """Create snapshots of a Cinder volume via libvirt.
@@ -1551,6 +1561,8 @@ class LibvirtDriver(driver.ComputeDriver):
         :param instance: VM instance reference
         :param volume_id: id of volume being snapshotted
         :param connection_info: dict of information used to create snapshots
+                     - snapshot_id : ID of snapshots (TODO consider making this
+                                                      a first-class parameter)
                      - type : qcow2 / <other>
                      - new_file : qcow2 file created by Cinder which
                                   becomes the VM's active image after
@@ -1570,8 +1582,12 @@ class LibvirtDriver(driver.ComputeDriver):
             raise exception.InvalidArguments('Unknown type: %s' %
                                              connection_info['type'])
 
+        snapshot_id = connection_info.get('snapshot_id', None)
+        if snapshot_id is None:
+            raise exception.InvalidArguments(_('snapshot_id required'))
+
         self._volume_snapshot_create(context, instance, virt_dom,
-                                     volume_id,
+                                     volume_id, snapshot_id,
                                      connection_info['new_file'])
 
     def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id,

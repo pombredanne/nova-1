@@ -362,3 +362,12 @@ class API(base.Base):
     @translate_volume_exception
     def get_volume_metadata_value(self, volume_id, key):
         raise NotImplementedError()
+
+    def update_snapshot_metadata(self, context,
+                                 snapshot_id, status, progress=None):
+        vs = cinderclient(context).volume_snapshots
+        vs.update_snapshot_metadata(
+            snapshot_id,
+            {'status': status,
+             'progress': progress}
+        )
