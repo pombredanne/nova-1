@@ -288,6 +288,8 @@ MIN_LIBVIRT_LIVESNAPSHOT_VERSION = (1, 0, 0)
 MIN_QEMU_LIVESNAPSHOT_VERSION = (1, 3, 0)
 # block size tuning requirements
 MIN_LIBVIRT_BLOCKIO_VERSION = (0, 10, 2)
+# BlockJobInfo management requirement
+MIN_LIBVIRT_BLOCKJOBINFO_VERSION = (1, 1, 1)
 
 
 def libvirt_error_handler(context, err):
@@ -1591,8 +1593,8 @@ class LibvirtDriver(driver.ComputeDriver):
                                      volume_id, snapshot_id,
                                      connection_info['new_file'])
 
-    def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id,
-                               delete_info=None):
+    def _volume_snapshot_delete(self, context, instance, volume_id, snapshot_id,
+                                delete_info=None):
         """
         Note:
             if file being merged into == active image:
@@ -1610,7 +1612,21 @@ class LibvirtDriver(driver.ComputeDriver):
             'merge_target_file': 'b.img' or None (if merging file_to_merge into
                                                   active image)
           }
+
+
+        Libvirt blockjob handling required for this method is broken
+        in versions of libvirt that do not contain:
+        http://libvirt.org/git/?p=libvirt.git;h=0f9e67bfad (1.1.1)
+        (Patch is pending in 1.0.5-maint branch as well, but we cannot detect
+        libvirt 1.0.5.5 vs. 1.0.5.6 here.)
         """
+
+        if not self.has_min_version(MIN_LIBVIRT_BLOCKJOBINFO_VERSION):
+            ver = '.'.join([str(x) for x in MIN_LIBVIRT_BLOCKJOBINFO_VERSION])
+            msg = _("Libvirt '%s' or later is required for online deletion "
+                    "of volume snapshots.") % ver
+            raise exception.Invalid(msg)
+
 
         LOG.debug('in libvirt/driver volume_snapshot_delete')
         LOG.debug("got delete_info: %s" % delete_info)
@@ -1718,6 +1734,23 @@ class LibvirtDriver(driver.ComputeDriver):
                 time.sleep(0.5)
 
         # If no exceptions by this point, operation succeeded.
+        # Signal back to Cinder
+
+        self._volume_api.update_snapshot_metadata(
+            context, snapshot_id, 'deleting', progress='90%')
+
+    def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id,
+                               delete_info=None):
+        try:
+            self._volume_snapshot_delete(context, instance, volume_id,
+                                         snapshot_id, delete_info=delete_info)
+        except Exception as e:
+            LOG.exception('Error occurred during volume_snapshot_delete, '
+                          'sending error to Cinder.')
+            self._volume_api.update_snapshot_metadata(
+                context, snapshot_id, 'error_deleting', progress='99%')
+
+            raise(e)
 
     def reboot(self, context, instance, network_info, reboot_type='SOFT',
                block_device_info=None, bad_volumes_callback=None):
