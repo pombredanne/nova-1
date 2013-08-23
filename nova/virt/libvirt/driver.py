@@ -1550,6 +1550,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
             raise
 
+        # Here, '90%' is a signal that Nova is done with its portion.
         self._volume_api.update_snapshot_metadata(
             context, snapshot_id, 'creating', progress='90%')
 
