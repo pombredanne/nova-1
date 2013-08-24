@@ -1625,7 +1625,7 @@ class LibvirtDriver(driver.ComputeDriver):
             ver = '.'.join([str(x) for x in MIN_LIBVIRT_BLOCKJOBINFO_VERSION])
             msg = _("Libvirt '%s' or later is required for online deletion "
                     "of volume snapshots.") % ver
-            raise exception.Invalid(msg)
+            #raise exception.Invalid(msg)
 
 
         LOG.debug('in libvirt/driver volume_snapshot_delete')
