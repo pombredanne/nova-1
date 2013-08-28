@@ -1442,8 +1442,9 @@ class LibvirtDriver(driver.ComputeDriver):
 
         xml = domain.XMLDesc(0)
         xml_doc = etree.fromstring(xml)
-        disks = xml_doc.findall('./devices/disk')
-        LOG.debug("disks: %s" % disks)
+
+        device_info = vconfig.LibvirtConfigGuest()
+        device_info.parse_dom(xml_doc)
 
         disks_to_snap = []         # to be snapshotted by libvirt
         disks_to_skip = []         # local disks not snapshotted
@@ -1458,76 +1459,73 @@ class LibvirtDriver(driver.ComputeDriver):
 
         LOG.debug("bdms: %s" % bdms)
 
-        for node in xml_doc.findall('./devices/disk'):
-            t = node.find('target')
-            if t is None:
+        for disk in device_info.devices:
+            if (disk.root_name != 'disk'):
                 continue
 
-            if node.find('serial') is None:
-                disks_to_skip.append(t.get('dev'))
+            if (disk.target_dev is None):
                 continue
 
-            if node.findtext('serial') != volume_id:
-                disks_to_skip.append(t.get('dev'))
+            if (disk.serial is None or disk.serial != volume_id):
+                disks_to_skip.append(disk.source_path)
                 continue
 
-            # node is a Cinder volume
+            # disk is a Cinder volume
 
             disk_info = {
-                'dev': t.get('dev'),
-                'serial': node.findtext('serial'),
-                'current_file': node.find('source').get('file')
+                'dev': disk.target_dev,
+                'serial': disk.serial,
+                'current_file': disk.source_path
             }
 
             this_bdm = [elem for elem in bdms if
-                           elem['volume_id'] == node.findtext('serial')].pop()
+                           elem['volume_id'] == disk_info['serial']].pop()
 
             info = {'bdm': this_bdm, 'disk': disk_info}
-
             LOG.debug("info: %s" % info)
 
             volume_id = disk_info['serial']
 
             # Determine path for new_file based on current path
             current_file = disk_info['current_file']
-            new_file_path = '%s/%s' % (os.path.dirname(current_file), new_file)
+            new_file_path = os.path.join(os.path.dirname(current_file),
+                                         new_file)
             disks_to_snap.append((current_file, new_file_path))
 
-        xml_snapshot = etree.Element('domainsnapshot')
-
-        xml_disks = etree.Element('disks')
+        snapshot = vconfig.LibvirtConfigGuestSnapshot()
+        disks = []
 
         for current_name, new_filename in disks_to_snap:
-            LOG.debug("creating xml for disk %s" % disk)
-            d = etree.Element('disk',
-                              name=current_name,
-                              snapshot='external')
-            source = etree.Element('source', file=new_filename)
+            snap_disk = vconfig.LibvirtConfigGuestSnapshotDisk()
+            snap_disk.name = current_name
+            snap_disk.source_path = new_filename
+            snap_disk.source_type = 'file'
+            snap_disk.snapshot = 'external'
+            snap_disk.driver_name = 'qcow2'
 
-            d.append(source)
-            xml_disks.append(d)
+            snapshot.add_disk(snap_disk)
 
         for dev in disks_to_skip:
-            LOG.debug("skipping disk %s" % dev)
+            snap_disk = vconfig.LibvirtConfigGuestSnapshotDisk()
+            snap_disk.name = dev
+            snap_disk.snapshot = 'no'
 
-            d = etree.Element('disk',
-                              name=dev,
-                              snapshot='no')
+            snapshot.add_disk(snap_disk)
 
-            xml_disks.append(d)
-
-        xml_snapshot.append(xml_disks)
-
-        LOG.debug("snap xml: %s" % etree.tostring(xml_snapshot))
+        snapshot_xml = snapshot.to_xml()
+        LOG.debug("snap xml: %s" % snapshot_xml)
 
         snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
                       libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
                       libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT)
 
+        QUIESCE = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE
+
         try:
-            QUIESCE = libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE
-            domain.snapshotCreateXML(etree.tostring(xml_snapshot),
+            domain.snapshotCreateXML(snapshot_xml,
                                      snap_flags | QUIESCE)
+
+            return   # Success
         except libvirt.libvirtError:
             msg = _('Unable to create quiesced VM snapshot, '
                     'attempting again with quiescing disabled.')
@@ -1536,24 +1534,15 @@ class LibvirtDriver(driver.ComputeDriver):
             LOG.warning(msg)
 
         try:
-            domain.snapshotCreateXML(etree.tostring(xml_snapshot),
-                                     snap_flags)
+            domain.snapshotCreateXML(snapshot_xml, snap_flags)
         except libvirt.libvirtError:
             msg = _('Unable to create VM snapshot, '
                     'failing volume_snapshot operation.')
             LOG.exception(msg)
 
-            self._volume_api.update_snapshot_status(
-                context,
-                snapshot_id,
-                'error',
-                progress='99%')
-
             raise
 
-        # Here, '90%' is a signal that Nova is done with its portion.
-        self._volume_api.update_snapshot_status(
-            context, snapshot_id, 'creating', progress='90%')
+        # Success
 
     def volume_snapshot_create(self, context, instance, volume_id,
                                create_info):
@@ -1587,9 +1576,20 @@ class LibvirtDriver(driver.ComputeDriver):
             raise exception.NovaException(_('snapshot_id required '
                                             'in create_info'))
 
-        self._volume_snapshot_create(context, instance, virt_dom,
-                                     volume_id, snapshot_id,
-                                     create_info['new_file'])
+        try:
+            self._volume_snapshot_create(context, instance, virt_dom,
+                                         volume_id, snapshot_id,
+                                         create_info['new_file'])
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception('Error occurred during volume_snapshot_create, '
+                              'sending error status to Cinder.')
+                self._volume_api.update_snapshot_status(
+                    context, snapshot_id, 'error', progress='99%')
+
+        # Here, '90%' is a signal that Nova is done with its portion.
+        self._volume_api.update_snapshot_status(
+            context, snapshot_id, 'creating', progress='90%')
 
     def _volume_snapshot_delete(self, context, instance, volume_id,
                                 snapshot_id, delete_info=None):
@@ -1638,24 +1638,25 @@ class LibvirtDriver(driver.ComputeDriver):
             raise exception.InstanceNotRunning(instance_id=instance['uuid'])
 
         ##### Find dev name
-        xml = virt_dom.XMLDesc(0)
-        xml_doc = etree.fromstring(xml)
-
         my_dev = None
         active_disk = None
 
-        for node in xml_doc.findall('./devices/disk'):
-            if node.find('serial') is None:
+        xml = virt_dom.XMLDesc(0)
+        xml_doc = etree.fromstring(xml)
+
+        device_info = vconfig.LibvirtConfigGuest()
+        device_info.parse_dom(xml_doc)
+
+        for disk in device_info.devices:
+            if (disk.root_name != 'disk'):
                 continue
 
-            t = node.find('target')
-            if t is None:
+            if (disk.target_dev is None or disk.serial is None):
                 continue
 
-            if node.findtext('serial') == volume_id:
-                my_dev = node.find('target').get('dev')
-                active_disk = node.find('source').get('file')
-                break
+            if disk.serial == volume_id:
+                my_dev = disk.target_dev
+                active_disk = disk.source_path
 
         LOG.debug("found dev, it's %s, with active disk: %s" %
                   (my_dev, active_disk))
@@ -1707,13 +1708,6 @@ class LibvirtDriver(driver.ComputeDriver):
                 LOG.debug(_('waiting for blockCommit job to finish.'))
                 time.sleep(0.5)
 
-        # If no exceptions by this point, operation succeeded.
-        # Signal back to Cinder.  '90%' indicates that Nova
-        # is done with its portion.
-
-        self._volume_api.update_snapshot_status(
-            context, snapshot_id, 'deleting', progress='90%')
-
     def volume_snapshot_delete(self, context, instance, volume_id, snapshot_id,
                                delete_info=None):
         try:
@@ -1722,9 +1716,16 @@ class LibvirtDriver(driver.ComputeDriver):
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.exception('Error occurred during volume_snapshot_delete, '
-                              'sending error to Cinder.')
+                              'sending error status to Cinder.')
                 self._volume_api.update_snapshot_status(
                     context, snapshot_id, 'error_deleting', progress='99%')
+
+        # If no exceptions by this point, operation succeeded.
+        # Signal back to Cinder.  '90%' indicates that Nova
+        # is done with its portion.
+
+        self._volume_api.update_snapshot_status(
+            context, snapshot_id, 'deleting', progress='90%')
 
     def reboot(self, context, instance, network_info, reboot_type='SOFT',
                block_device_info=None, bad_volumes_callback=None):
