@@ -190,6 +190,18 @@ class FakeVirtDomain(object):
     def detachDeviceFlags(self, xml, flags):
         pass
 
+    def snapshotCreateXML(self, xml, flags):
+        pass
+
+    def blockCommit(self, disk, base, top, bandwidth=0, flags=0):
+        pass
+
+    def blockRebase(self, disk, base, bandwidth=0, flags=0):
+        pass
+
+    def blockJobInfo(self, path, flags):
+        pass
+
 
 class CacheConcurrencyTestCase(test.TestCase):
     def setUp(self):
@@ -6350,3 +6362,250 @@ class LibvirtNonblockingTestCase(test.TestCase):
         import nova.virt.libvirt.driver as libvirt_driver
         connection = libvirt_driver.LibvirtDriver('')
         jsonutils.to_primitive(connection._conn, convert_instances=True)
+
+
+class LibvirtVolumeSnapshotTestCase(test.TestCase):
+    """Test for libvirtDriver._volume_snapshot_create/delete."""
+
+    def assertXmlEqual(self, expectedXmlStr, actualXmlStr):
+        self.assertThat(actualXmlStr, matchers.XMLMatches(expectedXmlStr))
+
+    def setUp(self):
+        super(LibvirtVolumeSnapshotTestCase, self).setUp()
+
+        self.conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        self.c = context.get_admin_context()
+
+        self.flags(instance_name_template='instance-%s')
+
+        # creating instance
+        self.inst = {}
+        self.inst['uuid'] = uuidutils.generate_uuid()
+        self.inst['id'] = '1'
+
+        # create disk info
+        self.bdms = [{'volume_id_a': 1,
+                      'device_name': '/dev/vde',
+                      'volume_id': '0e38683e-f0af-418f-a3f1-6b67ea0f919d',
+                      'connection_info': 'asdf'},
+                     {'volume_id_a': 2,
+                      'device_name': 'vda',
+                      'volume_id': '65f7ab66-44ef-47d9-b890-945792648bbe',
+                      'connection_info': 'asdf'}]
+
+        self.dom_xml = """
+              <domain type='kvm'>
+                <devices>
+                  <disk type='file'>
+                     <source file='disk1_file'/>
+                     <target dev='vda' bus='virtio'
+                       serial='0e38683e-f0af-418f-a3f1-6b67ea0f919d'/>
+                     <serial>0e38683e-f0af-418f-a3f1-6b67ea0f919d</serial>
+                  </disk>
+                  <disk type='block'>
+                    <source dev='/path/to/dev/1'/>
+                    <target dev='vdb' bus='virtio' serial='1234'/>
+                  </disk>
+                </devices>
+              </domain>"""
+
+        self.create_info = {'type': 'qcow2',
+                            'snapshot_id': '1234-5678',
+                            'new_file': 'new-file'}
+
+        self.volume_uuid = '0e38683e-f0af-418f-a3f1-6b67ea0f919d'
+
+        self.delete_info_1 = {'type': 'qcow2',
+                              'file_to_merge': 'snap.img',
+                              'merge_target_file': None}
+
+        self.delete_info_2 = {'type': 'qcow2',
+                              'file_to_merge': 'snap.img',
+                              'merge_target_file': 'other-snap.img'}
+
+    def tearDown(self):
+        super(LibvirtVolumeSnapshotTestCase, self).tearDown()
+
+    def match_test(self, input):
+        return False
+
+    def test_volume_snapshot_create(self):
+        CONF.instance_name_template = 'instance-%s'
+        self.mox.StubOutWithMock(self.conn, '_lookup_by_name')
+        self.mox.StubOutWithMock(self.conn, '_volume_api')
+        self.mox.StubOutWithMock(fake.FakeVirtAPI,
+                                 'block_device_mapping_get_all_by_instance')
+
+        instance = db.instance_create(self.c, self.inst)
+        volume_uuid = '0e38683e-f0af-418f-a3f1-6b67ea0f919d'
+        create_info = {'type': 'qcow2',
+                       'snapshot_id': '1234-5678',
+                       'new_file': 'new-file'}
+
+        snapshot_id = 'snap-asdf-qwert'
+        new_file = 'new-file'
+
+        domain = FakeVirtDomain(fake_xml=self.dom_xml)
+        self.mox.StubOutWithMock(domain, 'XMLDesc')
+        self.mox.StubOutWithMock(domain, 'snapshotCreateXML')
+        domain.XMLDesc(0).AndReturn(self.dom_xml)
+
+        snap_xml_src = '<domainsnapshot>\n' + \
+           '  <disks>\n' + \
+           '    <disk name="disk1_file" snapshot="external" type="file">\n' + \
+           '      <source file="new-file"/>\n' + \
+           '    </disk>\n' + \
+           '    <disk name="/path/to/dev/1" snapshot="no"/>\n' + \
+           '  </disks>\n' + \
+           '</domainsnapshot>\n'
+
+        snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
+                      libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT)
+
+        snap_flags_q = snap_flags | libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE
+
+        fake.FakeVirtAPI.block_device_mapping_get_all_by_instance(self.c,
+                                                                  instance).\
+            AndReturn(self.bdms)
+        domain.snapshotCreateXML(snap_xml_src, snap_flags_q).\
+            AndRaise(libvirt.libvirtError('quiescing failed, no qemu-ga'))
+        domain.snapshotCreateXML(snap_xml_src, snap_flags).AndReturn(0)
+
+        self.mox.ReplayAll()
+
+        self.conn._volume_snapshot_create(self.c, instance, domain,
+                                          volume_uuid, snapshot_id, new_file)
+
+    def test_volume_snapshot_create_outer_success(self):
+        instance = db.instance_create(self.c, self.inst)
+
+        domain = FakeVirtDomain(fake_xml=self.dom_xml)
+
+        self.mox.StubOutWithMock(self.conn, '_lookup_by_name')
+        self.mox.StubOutWithMock(self.conn, '_volume_api')
+        self.mox.StubOutWithMock(self.conn, '_volume_snapshot_create')
+
+        self.conn._lookup_by_name('instance-1').AndReturn(domain)
+
+        self.conn._volume_snapshot_create(self.c,
+                                          instance,
+                                          domain,
+                                          self.volume_uuid,
+                                          self.create_info['snapshot_id'],
+                                          self.create_info['new_file'])
+
+        self.conn._volume_api.update_snapshot_status(
+            self.c, self.create_info['snapshot_id'], 'creating')
+
+        self.mox.ReplayAll()
+
+        self.conn.volume_snapshot_create(self.c, instance, self.volume_uuid,
+                                         self.create_info)
+
+    def test_volume_snapshot_create_outer_failure(self):
+        instance = db.instance_create(self.c, self.inst)
+
+        domain = FakeVirtDomain(fake_xml=self.dom_xml)
+
+        self.mox.StubOutWithMock(self.conn, '_lookup_by_name')
+        self.mox.StubOutWithMock(self.conn, '_volume_api')
+        self.mox.StubOutWithMock(self.conn, '_volume_snapshot_create')
+
+        self.conn._lookup_by_name('instance-1').AndReturn(domain)
+
+        self.conn._volume_snapshot_create(self.c,
+                                          instance,
+                                          domain,
+                                          self.volume_uuid,
+                                          self.create_info['snapshot_id'],
+                                          self.create_info['new_file']).\
+            AndRaise(exception.NovaException('oops'))
+
+        self.conn._volume_api.update_snapshot_status(
+            self.c, self.create_info['snapshot_id'], 'error')
+
+        self.mox.ReplayAll()
+
+        self.assertRaises(exception.NovaException,
+                          self.conn.volume_snapshot_create,
+                          self.c,
+                          instance,
+                          self.volume_uuid,
+                          self.create_info)
+
+    def test_volume_snapshot_delete_1(self):
+        instance = db.instance_create(self.c, self.inst)
+        volume_uuid = 'e09e3a43-aa67-43b9-ad06-e15caa008768'
+        snapshot_id = 'snapshot-1234'
+
+        domain = FakeVirtDomain(fake_xml=self.dom_xml)
+        self.mox.StubOutWithMock(domain, 'XMLDesc')
+        domain.XMLDesc(0).AndReturn(self.dom_xml)
+
+        self.mox.StubOutWithMock(self.conn, '_lookup_by_name')
+        self.mox.StubOutWithMock(self.conn, 'has_min_version')
+ 
+        self.conn._lookup_by_name('instance-%s' % instance['id']).\
+            AndReturn(domain)
+        self.conn.has_min_version((1, 1, 1)).AndReturn(True)
+
+        self.mox.ReplayAll()
+
+        self.conn._volume_snapshot_delete(self.c, instance, volume_uuid,
+                                          snapshot_id, self.delete_info_1)
+
+    def test_volume_snapshot_delete_outer_success(self):
+        instance = db.instance_create(self.c, self.inst)
+        snapshot_id = 'snapshot-1234'
+
+        domain = FakeVirtDomain(fake_xml=self.dom_xml)
+
+        self.mox.StubOutWithMock(self.conn, '_lookup_by_name')
+        self.mox.StubOutWithMock(self.conn, '_volume_api')
+        self.mox.StubOutWithMock(self.conn, '_volume_snapshot_delete')
+
+        self.conn._volume_snapshot_delete(self.c,
+                                          instance,
+                                          self.volume_uuid,
+                                          snapshot_id,
+                                          delete_info=self.delete_info_1)
+
+        self.conn._volume_api.update_snapshot_status(
+            self.c, snapshot_id, 'deleting')
+
+        self.mox.ReplayAll()
+
+        self.conn.volume_snapshot_delete(self.c, instance, self.volume_uuid,
+                                         snapshot_id,
+                                         self.delete_info_1)
+
+    def test_volume_snapshot_delete_outer_failure(self):
+        instance = db.instance_create(self.c, self.inst)
+        snapshot_id = '1234-9876'
+
+        domain = FakeVirtDomain(fake_xml=self.dom_xml)
+
+        self.mox.StubOutWithMock(self.conn, '_lookup_by_name')
+        self.mox.StubOutWithMock(self.conn, '_volume_api')
+        self.mox.StubOutWithMock(self.conn, '_volume_snapshot_delete')
+
+        self.conn._volume_snapshot_delete(self.c,
+                                          instance,
+                                          self.volume_uuid,
+                                          snapshot_id,
+                                          delete_info=self.delete_info_1).\
+            AndRaise(exception.NovaException('oops'))
+
+        self.conn._volume_api.update_snapshot_status(
+            self.c, snapshot_id, 'error_deleting')
+
+        self.mox.ReplayAll()
+
+        self.assertRaises(exception.NovaException,
+                          self.conn.volume_snapshot_delete,
+                          self.c,
+                          instance,
+                          self.volume_uuid,
+                          snapshot_id,
+                          self.delete_info_1)

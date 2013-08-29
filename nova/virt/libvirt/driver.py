@@ -67,7 +67,6 @@ from nova.compute import flavors
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.compute import vm_mode
-from nova import conductor
 from nova import context as nova_context
 from nova import exception
 from nova.image import glance
@@ -360,7 +359,6 @@ class LibvirtDriver(driver.ComputeDriver):
                 continue
             self.disk_cachemodes[disk_type] = cache_mode
 
-        self._conductor_api = conductor.API()
         self._volume_api = volume.API()
 
     @property
@@ -1467,7 +1465,7 @@ class LibvirtDriver(driver.ComputeDriver):
         disks_to_snap = []         # to be snapshotted by libvirt
         disks_to_skip = []         # local disks not snapshotted
 
-        bdms = self._conductor_api.block_device_mapping_get_all_by_instance(
+        bdms = self.virtapi.block_device_mapping_get_all_by_instance(
             context,
             instance)
 

@@ -128,6 +128,12 @@ VIR_ERR_INTERNAL_ERROR = 950
 # Readonly
 VIR_CONNECT_RO = 1
 
+# snapshotCreateXML flags
+VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA = 4
+VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY = 16
+VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT = 32
+VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE = 64
+
 
 def _parse_disk_info(element):
     disk_info = {}
@@ -494,6 +500,7 @@ class DomainSnapshot(object):
     def __init__(self, name, domain):
         self._name = name
         self._domain = domain
+        self._disks = []
 
     def delete(self, flags):
         del self._domain._snapshots[self._name]
