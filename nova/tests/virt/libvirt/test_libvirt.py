@@ -6426,9 +6426,6 @@ class LibvirtVolumeSnapshotTestCase(test.TestCase):
     def tearDown(self):
         super(LibvirtVolumeSnapshotTestCase, self).tearDown()
 
-    def match_test(self, input):
-        return False
-
     def test_volume_snapshot_create(self):
         CONF.instance_name_template = 'instance-%s'
         self.mox.StubOutWithMock(self.conn, '_lookup_by_name')
@@ -6450,6 +6447,7 @@ class LibvirtVolumeSnapshotTestCase(test.TestCase):
         self.mox.StubOutWithMock(domain, 'snapshotCreateXML')
         domain.XMLDesc(0).AndReturn(self.dom_xml)
 
+        """
         snap_xml_src = '<domainsnapshot>\n' + \
            '  <disks>\n' + \
            '    <disk name="disk1_file" snapshot="external" type="file">\n' + \
@@ -6458,6 +6456,17 @@ class LibvirtVolumeSnapshotTestCase(test.TestCase):
            '    <disk name="/path/to/dev/1" snapshot="no"/>\n' + \
            '  </disks>\n' + \
            '</domainsnapshot>\n'
+           """
+
+        snap_xml_src = (
+           '<domainsnapshot>' '\n'
+           '  <disks>\n'
+           '    <disk name="disk1_file" snapshot="external" type="file">\n'
+           '      <source file="new-file"/>\n'
+           '    </disk>\n'
+           '    <disk name="/path/to/dev/1" snapshot="no"/>\n'
+           '  </disks>\n'
+           '</domainsnapshot>\n')
 
         snap_flags = (libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY |
                       libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA |
@@ -6468,6 +6477,7 @@ class LibvirtVolumeSnapshotTestCase(test.TestCase):
         fake.FakeVirtAPI.block_device_mapping_get_all_by_instance(self.c,
                                                                   instance).\
             AndReturn(self.bdms)
+
         domain.snapshotCreateXML(snap_xml_src, snap_flags_q).\
             AndRaise(libvirt.libvirtError('quiescing failed, no qemu-ga'))
         domain.snapshotCreateXML(snap_xml_src, snap_flags).AndReturn(0)
