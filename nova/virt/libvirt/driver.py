@@ -1603,11 +1603,10 @@ class LibvirtDriver(driver.ComputeDriver):
                 LOG.exception('Error occurred during volume_snapshot_create, '
                               'sending error status to Cinder.')
                 self._volume_api.update_snapshot_status(
-                    context, snapshot_id, 'error', progress='99%')
+                    context, snapshot_id, 'error')
 
-        # Here, '90%' is a signal that Nova is done with its portion.
         self._volume_api.update_snapshot_status(
-            context, snapshot_id, 'creating', progress='90%')
+            context, snapshot_id, 'creating')
 
     def _volume_snapshot_delete(self, context, instance, volume_id,
                                 snapshot_id, delete_info=None):
@@ -1736,14 +1735,10 @@ class LibvirtDriver(driver.ComputeDriver):
                 LOG.exception('Error occurred during volume_snapshot_delete, '
                               'sending error status to Cinder.')
                 self._volume_api.update_snapshot_status(
-                    context, snapshot_id, 'error_deleting', progress='99%')
+                    context, snapshot_id, 'error_deleting')
 
-        # If no exceptions by this point, operation succeeded.
-        # Signal back to Cinder.  '90%' indicates that Nova
-        # is done with its portion.
-
-        self._volume_api.update_snapshot_status(
-            context, snapshot_id, 'deleting', progress='90%')
+        self._volume_api.update_snapshot_status(context,
+                                                snapshot_id, 'deleting')
 
     def reboot(self, context, instance, network_info, reboot_type='SOFT',
                block_device_info=None, bad_volumes_callback=None):
